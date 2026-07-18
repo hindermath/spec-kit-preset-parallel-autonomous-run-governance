@@ -66,6 +66,7 @@ function Get-TestCampaign {
         maxConcurrency = 3
         runnerProfile = if ($DeliveryMode -eq 'MergeAndSync') { 'ready' } else { 'fixture' }
         requireAutonomousPreset = $false
+        operatorInstructions = 'Fixture operator instruction.'
         workers = @($Workers)
         consolidation = [ordered]@{
             allReadyBarrier = $true
@@ -169,6 +170,9 @@ try {
     $replicated = Invoke-Campaign (Get-TestCampaign 'replicated' 'ReplicatedTargets' $replicatedWorkers) 'replicated'
     Assert-Test ($replicated.Data.status -eq 'Completed') 'ReplicatedTargets did not complete'
     Assert-Test ($replicated.Data.maximumObservedConcurrency -ge 2) 'ReplicatedTargets did not prove concurrency'
+    $replicatedPrompt = Get-Content -LiteralPath (Join-Path $replicated.Runtime 'prompts/replicated-01.txt') -Raw
+    Assert-Test ($replicatedPrompt.Contains('Fixture operator instruction.')) 'Campaign operator instructions were not routed to the worker'
+    Assert-Test ($replicatedPrompt.Contains("Remain on the assigned branch '")) 'Assigned branch boundary was not routed to the worker'
 
     $independentRepo = Initialize-TestRepository 'independent-repo'
     $independentWorkers = 1..3 | ForEach-Object { Get-TestWorker "independent-0$_" $independentRepo }

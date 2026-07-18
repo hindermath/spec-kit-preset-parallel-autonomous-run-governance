@@ -219,6 +219,10 @@ function Test-PARCampaign {
     Assert-PARCondition ([int] $Campaign.maxConcurrency -ge 1 -and [int] $Campaign.maxConcurrency -le 3) 'maxConcurrency muss zwischen 1 und 3 liegen.'
     Assert-PARCondition ($Campaign.workers.Count -gt 0) 'Mindestens ein Worker ist erforderlich.'
     Assert-PARCondition $Profiles.profiles.ContainsKey([string] $Campaign.runnerProfile) "Runner-Profil '$($Campaign.runnerProfile)' fehlt."
+    if ($Campaign.ContainsKey('operatorInstructions')) {
+        Assert-PARCondition ($Campaign.operatorInstructions -is [string]) 'operatorInstructions muss eine Zeichenkette sein.'
+        Assert-PARCondition (([string] $Campaign.operatorInstructions).Length -le 8000) 'operatorInstructions ist laenger als 8000 Zeichen.'
+    }
 
     $runnerProfileData = $Profiles.profiles[[string] $Campaign.runnerProfile]
     Assert-PARCondition (-not [string]::IsNullOrWhiteSpace([string] $runnerProfileData.executable)) 'Runner executable fehlt.'
@@ -614,6 +618,12 @@ Set status ReadyForMerge, headSha to the exact pushed head, prUrl to the created
                 } else {
                     'The coordinator derives a local worker result when no explicit result file is written.'
                 }
+                $operatorInstructions = if ($Campaign.ContainsKey('operatorInstructions') -and
+                    -not [string]::IsNullOrWhiteSpace([string] $Campaign.operatorInstructions)) {
+                    [string] $Campaign.operatorInstructions
+                } else {
+                    'No campaign-specific operator instructions were declared.'
+                }
                 $prompt = @"
 Execute the installed speckit.autonomous workflow for this worker.
 Campaign ID: $($Campaign.campaignId)
@@ -622,6 +632,9 @@ Run ID: $($worker.runId)
 Campaign delivery mode: $($Campaign.deliveryMode)
 Worker delivery mode: $workerDeliveryMode
 Feature input: $featureInput
+Remain on the assigned branch '$($worker.branch)'. Do not create or switch branches.
+Campaign-specific operator instructions:
+$operatorInstructions
 $incomingHandoffInstructions
 $handoffInstructions
 $resultInstructions

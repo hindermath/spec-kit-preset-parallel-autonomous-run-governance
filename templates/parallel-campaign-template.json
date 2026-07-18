@@ -7,6 +7,7 @@
   "maxConcurrency": 3,
   "runnerProfile": "default-agent",
   "requireAutonomousPreset": true,
+  "operatorInstructions": "Optional, explicitly authorized campaign-specific context. Do not include secrets.",
   "workers": [
     {
       "workerId": "worker-01",
