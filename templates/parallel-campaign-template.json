@@ -1,0 +1,34 @@
+{
+  "schemaVersion": "1.0",
+  "campaignId": "00000000-0000-0000-0000-000000000000",
+  "name": "replace-with-campaign-name",
+  "topology": "ReplicatedTargets",
+  "deliveryMode": "LocalImplementation",
+  "maxConcurrency": 3,
+  "runnerProfile": "default-agent",
+  "requireAutonomousPreset": true,
+  "workers": [
+    {
+      "workerId": "worker-01",
+      "runId": "00000000-0000-0000-0000-000000000001",
+      "repository": "/absolute/or/runtime-bound/repository",
+      "baseRef": "origin/main",
+      "branch": "parallel/campaign/worker-01",
+      "featureInput": "path/to/intake.md",
+      "dependsOn": [],
+      "handoffs": [
+        {
+          "consumerWorkerId": "worker-02",
+          "path": "specs/NNN-feature/handoffs/worker-01-to-worker-02.json"
+        }
+      ]
+    }
+  ],
+  "consolidation": {
+    "allReadyBarrier": true,
+    "mergeOrder": [
+      "worker-01"
+    ],
+    "humanSelectionRequired": false
+  }
+}

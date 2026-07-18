@@ -1,0 +1,28 @@
+{
+  "schemaVersion": "1.0",
+  "profiles": {
+    "default-agent": {
+      "executable": "codex",
+      "arguments": [
+        "exec",
+        "--cd",
+        "{worktree}",
+        "--sandbox",
+        "workspace-write",
+        "{prompt}"
+      ]
+    }
+  },
+  "mergeProfiles": {
+    "github-pr": {
+      "executable": "gh",
+      "arguments": [
+        "pr",
+        "merge",
+        "{prUrl}",
+        "--merge",
+        "--delete-branch"
+      ]
+    }
+  }
+}
