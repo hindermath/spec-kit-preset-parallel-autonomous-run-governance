@@ -59,3 +59,7 @@ The four topologies, bounded scheduling, explicit alternative selection, and
 hashed pipeline handoffs are ready for the larger native Secure CaseTracker
 field campaign. Version `0.1.0` remains experimental and opt-in until that
 field campaign is complete.
+
+The field preflight subsequently identified that sequential units in one
+repository need to inherit the exact predecessor head. Version `0.1.1` adds
+the validated `baseWorkerId` contract before the Secure CaseTracker campaign.

@@ -42,6 +42,7 @@ function Get-TestWorker {
         runId = [guid]::NewGuid().ToString()
         repository = $Repository
         baseRef = 'main'
+        baseWorkerId = $null
         branch = "parallel/test/$([guid]::NewGuid().ToString('N'))/$Id"
         featureInput = 'README.md'
         dependsOn = @($DependsOn)
@@ -201,9 +202,22 @@ try {
     $pipelineWorkers[2].handoffs = @(
         [ordered]@{ consumerWorkerId = 'pipeline-d'; path = 'handoffs/c-to-d.json' }
     )
+    $pipelineWorkers[1].baseWorkerId = 'pipeline-a'
+    $pipelineWorkers[2].baseWorkerId = 'pipeline-a'
+    $pipelineWorkers[3].baseWorkerId = 'pipeline-b'
     $pipeline = Invoke-Campaign (Get-TestCampaign 'pipeline' 'Pipeline' $pipelineWorkers) 'pipeline'
     Assert-Test ($pipeline.Data.status -eq 'Completed') 'Pipeline did not complete'
     Assert-Test ($pipeline.Data.maximumObservedConcurrency -eq 2) 'Pipeline did not execute the B/C wave concurrently'
+    $pipelineStates = @{}
+    foreach ($workerState in $pipeline.Data.workers) {
+        $pipelineStates[$workerState.workerId] = $workerState
+    }
+    & git -C $pipelineRepo merge-base --is-ancestor $pipelineStates['pipeline-a'].headSha $pipelineStates['pipeline-b'].headSha
+    Assert-Test ($LASTEXITCODE -eq 0) 'pipeline-b did not inherit pipeline-a head'
+    & git -C $pipelineRepo merge-base --is-ancestor $pipelineStates['pipeline-a'].headSha $pipelineStates['pipeline-c'].headSha
+    Assert-Test ($LASTEXITCODE -eq 0) 'pipeline-c did not inherit pipeline-a head'
+    & git -C $pipelineRepo merge-base --is-ancestor $pipelineStates['pipeline-b'].headSha $pipelineStates['pipeline-d'].headSha
+    Assert-Test ($LASTEXITCODE -eq 0) 'pipeline-d did not inherit pipeline-b head'
 
     $invalid = Get-TestCampaign 'cycle' 'Pipeline' @(
         (Get-TestWorker 'cycle-a' $pipelineRepo @('cycle-b')),
@@ -215,6 +229,16 @@ try {
     Write-Data $invalidPath $invalid
     & pwsh -NoProfile -File $coordinator -Action Validate -Manifest $invalidPath -RunnerConfig $script:runnerConfig 2>$null
     Assert-Test ($LASTEXITCODE -ne 0) 'DAG cycle was accepted'
+
+    $invalidBaseWorker = Get-TestCampaign 'invalid-base-worker' 'Pipeline' @(
+        (Get-TestWorker 'base-a' $pipelineRepo),
+        (Get-TestWorker 'base-b' $pipelineRepo)
+    )
+    $invalidBaseWorker.workers[1].baseWorkerId = 'base-a'
+    $invalidBaseWorkerPath = Join-Path $tempRoot 'invalid-base-worker.json'
+    Write-Data $invalidBaseWorkerPath $invalidBaseWorker
+    & pwsh -NoProfile -File $coordinator -Action Validate -Manifest $invalidBaseWorkerPath -RunnerConfig $script:runnerConfig 2>$null
+    Assert-Test ($LASTEXITCODE -ne 0) 'baseWorkerId outside dependsOn was accepted'
 
     $invalidConcurrency = Get-TestCampaign 'too-wide' 'ReplicatedTargets' @(
         (Get-TestWorker 'wide-a' $pipelineRepo)

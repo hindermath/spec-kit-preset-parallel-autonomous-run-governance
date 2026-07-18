@@ -239,8 +239,18 @@ function Test-PARCampaign {
         Assert-PARCondition (Test-Path -LiteralPath $repository -PathType Container) "Repository fehlt: $repository"
         $inside = Invoke-PARGit $repository @('rev-parse', '--is-inside-work-tree') -AllowFailure
         Assert-PARCondition ($inside.ExitCode -eq 0) "Kein Git-Worktree: $repository"
-        $base = Invoke-PARGit $repository @('rev-parse', '--verify', "$($worker.baseRef)^{commit}") -AllowFailure
-        Assert-PARCondition ($base.ExitCode -eq 0) "baseRef '$($worker.baseRef)' fehlt in $repository."
+        $baseWorkerId = if ($worker.ContainsKey('baseWorkerId')) { [string] $worker.baseWorkerId } else { '' }
+        if ([string]::IsNullOrWhiteSpace($baseWorkerId)) {
+            Assert-PARCondition (-not [string]::IsNullOrWhiteSpace([string] $worker.baseRef)) "baseRef oder baseWorkerId von '$($worker.workerId)' fehlt."
+            $base = Invoke-PARGit $repository @('rev-parse', '--verify', "$($worker.baseRef)^{commit}") -AllowFailure
+            Assert-PARCondition ($base.ExitCode -eq 0) "baseRef '$($worker.baseRef)' fehlt in $repository."
+        } else {
+            Assert-PARCondition ($workerIds -contains $baseWorkerId) "baseWorkerId '$baseWorkerId' von '$($worker.workerId)' ist unbekannt."
+            Assert-PARCondition (@($worker.dependsOn) -contains $baseWorkerId) "baseWorkerId '$baseWorkerId' muss direkte Abhaengigkeit von '$($worker.workerId)' sein."
+            $baseWorker = @($Campaign.workers | Where-Object { $_.workerId -eq $baseWorkerId })[0]
+            $baseRepository = Resolve-PARRepository ([string] $baseWorker.repository) $ManifestDirectory
+            Assert-PARCondition ($baseRepository -eq $repository) "baseWorkerId '$baseWorkerId' muss dasselbe Repository wie '$($worker.workerId)' verwenden."
+        }
         if (-not $SkipCleanCheck) {
             $dirty = Invoke-PARGit $repository @('status', '--porcelain')
             Assert-PARCondition ($dirty.Output.Count -eq 0) "Repository ist nicht sauber: $repository"
@@ -427,6 +437,10 @@ function Complete-PARWorker {
     Assert-PARCondition ($resultData.workerId -eq $Worker.workerId) "Worker result workerId stimmt nicht: $ResultPath"
     Assert-PARCondition ($resultData.runId -eq $Worker.runId) "Worker result runId stimmt nicht: $ResultPath"
     Assert-PARCondition (@('Completed', 'ReadyForMerge', 'Failed') -contains $resultData.status) "Worker result status ist ungueltig: $ResultPath"
+    if ($Campaign.deliveryMode -eq 'MergeAndSync') {
+        Assert-PARCondition ($resultData.status -eq 'ReadyForMerge') "MergeAndSync worker must stop at ReadyForMerge: $ResultPath"
+        Assert-PARCondition (-not [string]::IsNullOrWhiteSpace([string] $resultData.prUrl)) "MergeAndSync worker result requires prUrl: $ResultPath"
+    }
     $actualHead = (Invoke-PARGit $RunningEntry.Worktree @('rev-parse', 'HEAD')).Output[0]
     Assert-PARCondition ($resultData.headSha -eq $actualHead) "Worker result headSha ist nicht der aktuelle Worktree-Head: $ResultPath"
 
@@ -560,11 +574,22 @@ function Invoke-PARStart {
                 if (-not (Test-Path -LiteralPath $worktree -PathType Container)) {
                     $branchExists = Invoke-PARGit $repository @('show-ref', '--verify', '--quiet', "refs/heads/$($worker.branch)") -AllowFailure
                     Assert-PARCondition ($branchExists.ExitCode -ne 0) "Branch existiert bereits: $($worker.branch)"
-                    $add = Invoke-PARGit $repository @('worktree', 'add', '-b', [string] $worker.branch, $worktree, [string] $worker.baseRef)
+                    $baseWorkerId = if ($worker.ContainsKey('baseWorkerId')) { [string] $worker.baseWorkerId } else { '' }
+                    if ([string]::IsNullOrWhiteSpace($baseWorkerId)) {
+                        $startPoint = [string] $worker.baseRef
+                    } else {
+                        $baseWorkerState = Get-PARWorkerState $campaignState $baseWorkerId
+                        Assert-PARCondition (@('Completed', 'ReadyForMerge', 'Merged') -contains $baseWorkerState.status) "baseWorkerId '$baseWorkerId' ist nicht bereit."
+                        $startPoint = [string] $baseWorkerState.headSha
+                        $baseCommit = Invoke-PARGit $repository @('rev-parse', '--verify', "$startPoint^{commit}") -AllowFailure
+                        Assert-PARCondition ($baseCommit.ExitCode -eq 0) "Head von baseWorkerId '$baseWorkerId' fehlt in $repository."
+                    }
+                    $add = Invoke-PARGit $repository @('worktree', 'add', '-b', [string] $worker.branch, $worktree, $startPoint)
                     Assert-PARCondition ($add.ExitCode -eq 0) "Worktree konnte nicht erstellt werden: $worktree"
                 }
 
                 $promptPath = Join-Path $promptsRoot "$($worker.workerId).txt"
+                $resultPath = Join-Path $resultsRoot "$($worker.workerId).json"
                 $featureInput = [string] $worker.featureInput
                 if (-not [IO.Path]::IsPathRooted($featureInput)) {
                     $featureInput = Join-Path $worktree $featureInput
@@ -579,19 +604,30 @@ function Invoke-PARStart {
                 } else {
                     "Treat these validated, immutable incoming handoffs as required input: $($incomingHandoffs | ConvertTo-Json -Depth 10 -Compress)"
                 }
+                $workerDeliveryMode = if ($Campaign.deliveryMode -eq 'MergeAndSync') { 'PublishPR' } else { [string] $Campaign.deliveryMode }
+                $resultInstructions = if ($Campaign.deliveryMode -eq 'MergeAndSync') {
+                    @"
+The campaign retains all merge authority. Your worker delivery boundary is PublishPR: commit, push, create the PR, but do not merge it.
+Before finishing, write worker-result schema 1.0 to: $resultPath
+Set status ReadyForMerge, headSha to the exact pushed head, prUrl to the created PR URL, autonomousStatePath and autonomousStateSha256 to the final state, and include every declared handoff with its SHA-256.
+"@
+                } else {
+                    'The coordinator derives a local worker result when no explicit result file is written.'
+                }
                 $prompt = @"
 Execute the installed speckit.autonomous workflow for this worker.
 Campaign ID: $($Campaign.campaignId)
 Worker ID: $($worker.workerId)
 Run ID: $($worker.runId)
-Delivery mode: $($Campaign.deliveryMode)
+Campaign delivery mode: $($Campaign.deliveryMode)
+Worker delivery mode: $workerDeliveryMode
 Feature input: $featureInput
 $incomingHandoffInstructions
 $handoffInstructions
+$resultInstructions
 Do not infer remote, merge, bypass, cancellation, secret, or provider authority.
 "@
                 $prompt | Set-Content -LiteralPath $promptPath -Encoding utf8NoBOM
-                $resultPath = Join-Path $resultsRoot "$($worker.workerId).json"
                 $handoffDeclarations = @($worker.handoffs)
                 $handoffsJson = if ($handoffDeclarations.Count -eq 0) {
                     '[]'
@@ -608,6 +644,7 @@ Do not infer remote, merge, bypass, cancellation, secret, or provider authority.
                     prompt = $prompt
                     promptFile = $promptPath
                     resultFile = $resultPath
+                    resultDirectory = $resultsRoot
                     handoffsJson = $handoffsJson
                 }
                 $arguments = ConvertTo-PARArgumentList @($runnerProfileData.arguments) $values
