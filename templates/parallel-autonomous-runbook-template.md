@@ -30,6 +30,11 @@ Each worker owns one branch and one linked worktree. Runtime logs, locks, and
 local runner bindings stay outside tracked feature artifacts. The normal
 checkout is never switched or reset.
 
+Sequential workers in one repository may declare `baseWorkerId`. It must name
+a direct dependency in the same repository. The coordinator creates the new
+branch from that predecessor's validated exact head, not from a moving branch
+name.
+
 ## Scheduling
 
 Ordinary worker failures do not cancel unrelated running workers. Pipeline

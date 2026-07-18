@@ -13,6 +13,7 @@
       "runId": "00000000-0000-0000-0000-000000000001",
       "repository": "/absolute/or/runtime-bound/repository",
       "baseRef": "origin/main",
+      "baseWorkerId": null,
       "branch": "parallel/campaign/worker-01",
       "featureInput": "path/to/intake.md",
       "dependsOn": [],

@@ -1,6 +1,6 @@
 # Parallel Autonomous Run Governance Preset
 
-Version: `0.1.0`
+Version: `0.1.1`
 Status: experimental, opt-in
 Priority: `80`
 Requires: Spec Kit `>=0.8.3` and `autonomous-run-governance >=0.2.2`
@@ -25,7 +25,7 @@ specify preset add --dev /path/to/parallel-autonomous-run-governance --priority 
 specify preset info parallel-autonomous-run-governance
 ```
 
-Version `0.1.0` remains opt-in until deterministic tests, real local development
+Version `0.1.1` remains opt-in until deterministic tests, real local development
 campaigns, and the Secure CaseTracker Units 00-03 field campaign have passed.
 
 The 13-worker native macOS smoke passed all four topologies. See
@@ -69,8 +69,14 @@ Arguments are executed directly. Do not use shell expressions in a profile.
 
 - Maximum supported concurrency is three.
 - Every worker owns a separate branch and worktree.
+- A dependent worker may branch from a validated direct predecessor through
+  `baseWorkerId`, preserving sequential feature history without sharing a
+  worktree.
 - Stop is cooperative and grants no process-kill authority.
 - Alternative consolidation requires explicit human selection.
 - Merge-and-sync uses an all-ready barrier and stops on the first merge error.
+- Child workers in a `MergeAndSync` campaign stop at `PublishPR`; only the
+  coordinator may execute the ordered merge profile after every result is
+  ready.
 - Installation grants no remote, merge, bypass, cancellation, secret, or
   provider-administration rights.
