@@ -1,6 +1,6 @@
 # Parallel Autonomous Run Governance Preset
 
-Version: `0.1.1`
+Version: `0.1.2`
 Status: experimental, opt-in
 Priority: `80`
 Requires: Spec Kit `>=0.8.3` and `autonomous-run-governance >=0.2.2`
@@ -25,7 +25,7 @@ specify preset add --dev /path/to/parallel-autonomous-run-governance --priority 
 specify preset info parallel-autonomous-run-governance
 ```
 
-Version `0.1.1` remains opt-in until deterministic tests, real local development
+Version `0.1.2` remains opt-in until deterministic tests, real local development
 campaigns, and the Secure CaseTracker Units 00-03 field campaign have passed.
 
 The 13-worker native macOS smoke passed all four topologies. See
@@ -64,11 +64,15 @@ pwsh -NoProfile -File .specify/presets/parallel-autonomous-run-governance/script
 
 Runner profiles contain executable names and argument arrays, not secrets.
 Arguments are executed directly. Do not use shell expressions in a profile.
+Optional campaign-level `operatorInstructions` are copied verbatim into every
+worker prompt and therefore belong in the reviewed campaign manifest. Use them
+only for explicit, campaign-specific context or authority, never for secrets.
 
 ## Safety
 
 - Maximum supported concurrency is three.
 - Every worker owns a separate branch and worktree.
+- Every worker is instructed to remain on its assigned branch.
 - A dependent worker may branch from a validated direct predecessor through
   `baseWorkerId`, preserving sequential feature history without sharing a
   worktree.
