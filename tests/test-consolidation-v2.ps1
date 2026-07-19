@@ -357,6 +357,22 @@ try {
     Invoke-TestConsolidate $technicalFailure -ExpectFailure
     Assert-Test ((Read-TestState $technicalFailure.State).status -eq 'NeedsRevalidation') 'Technical failure did not require revalidation'
 
+    $manifestDrift = New-TestCase 'manifest-drift'
+    $changedManifest = Read-TestState $manifestDrift.Manifest
+    $changedManifest.name = 'manifest-drift-after-review'
+    Write-TestJson $manifestDrift.Manifest $changedManifest
+    Invoke-TestConsolidate $manifestDrift -ExpectFailure
+    Assert-Test ((Read-TestState $manifestDrift.State).status -eq 'ReadyForConsolidation') `
+        'Manifest drift modified the campaign state before rejection'
+
+    $campaignMismatch = New-TestCase 'campaign-id-mismatch'
+    $mismatchedState = Read-TestState $campaignMismatch.State
+    $mismatchedState.campaignId = [guid]::NewGuid().ToString()
+    Write-TestJson $campaignMismatch.State $mismatchedState
+    Invoke-TestConsolidate $campaignMismatch -ExpectFailure
+    Assert-Test ((Read-TestState $campaignMismatch.State).status -eq 'ReadyForConsolidation') `
+        'Campaign ID mismatch modified the campaign state before rejection'
+
     $partial = New-TestCase 'partial-merge-resume' -WorkerCount 2
     Update-ProviderWorker $partial 'worker-01' { param($worker) $worker.mergeFailuresRemaining = 1 }
     Invoke-TestConsolidate $partial -ExpectFailure

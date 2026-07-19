@@ -1314,6 +1314,7 @@ function Invoke-PARConsolidate {
     param(
         [Parameter(Mandatory)][hashtable] $Campaign,
         [Parameter(Mandatory)][hashtable] $Profiles,
+        [Parameter(Mandatory)][string] $ManifestPath,
         [Parameter(Mandatory)][string] $StatePath,
         [Parameter(Mandatory)][string] $ManifestDirectory,
         [Parameter(Mandatory)][string] $RuntimePath,
@@ -1323,6 +1324,10 @@ function Invoke-PARConsolidate {
     )
 
     $campaignState = Read-PARJson $StatePath
+    Assert-PARCondition ($campaignState.campaignId -eq $Campaign.campaignId) `
+        'State campaignId stimmt nicht mit Manifest ueberein.'
+    Assert-PARCondition ($campaignState.manifestSha256 -eq (Get-PARSha256 $ManifestPath)) `
+        'Manifest hat sich seit dem State-Checkpoint geaendert.'
     Initialize-PARStateShape $campaignState $Campaign $Profiles
     $eligibleIds = @($Campaign.consolidation.mergeOrder)
     if ($Campaign.topology -eq 'AlternativeSolutions') {
@@ -1585,7 +1590,7 @@ switch ($Action) {
                 [string] $resumeState.phase -eq 'ConsolidationPaused')
         )
         if ($resumeConsolidation) {
-            Invoke-PARConsolidate $campaign $profiles $statePath $manifestDirectory $runtimePath `
+            Invoke-PARConsolidate $campaign $profiles $manifestPath $statePath $manifestDirectory $runtimePath `
                 $SelectedWorker -DoMerge -IsResume
         } else {
             Invoke-PARStart $campaign $profiles $manifestPath $manifestDirectory $statePath $runtimePath -IsResume
@@ -1593,7 +1598,7 @@ switch ($Action) {
         Write-Output "PASS: campaign resumed; state written to $statePath"
     }
     'Consolidate' {
-        Invoke-PARConsolidate $campaign $profiles $statePath $manifestDirectory $runtimePath `
+        Invoke-PARConsolidate $campaign $profiles $manifestPath $statePath $manifestDirectory $runtimePath `
             $SelectedWorker -DoMerge:$Merge
         Write-Output "PASS: campaign consolidation recorded in $statePath"
     }

@@ -82,7 +82,10 @@ if ($worker.ContainsKey('mergeFailuresRemaining') -and
     exit 11
 }
 $worker.state = 'Merged'
-$worker.mergeCommitSha = ('{0:x40}' -f ([Math]::Abs($WorkerId.GetHashCode())))
+$workerIdHash = [Security.Cryptography.SHA256]::HashData(
+    [Text.Encoding]::UTF8.GetBytes($WorkerId)
+)
+$worker.mergeCommitSha = [Convert]::ToHexString($workerIdHash).ToLowerInvariant().Substring(0, 40)
 Write-FixtureJson $state
 if ($worker.ContainsKey('postMergeDelayMilliseconds') -and
     [int] $worker.postMergeDelayMilliseconds -gt 0) {
