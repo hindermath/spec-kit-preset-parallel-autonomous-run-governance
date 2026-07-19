@@ -109,6 +109,100 @@ function Write-PARJsonAtomic {
     Move-Item -LiteralPath $temp -Destination $Path -Force
 }
 
+function Enter-PARCampaignLock {
+    param([Parameter(Mandatory)][string] $RuntimePath)
+
+    [void](New-Item -ItemType Directory -Path $RuntimePath -Force)
+    $lockPath = Join-Path $RuntimePath 'campaign.lock'
+    $ownerPath = Join-Path $lockPath 'owner.json'
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        $created = $false
+        try {
+            [void](New-Item -ItemType Directory -Path $lockPath -ErrorAction Stop)
+            $created = $true
+        } catch {
+            $created = $false
+        }
+
+        if ($created) {
+            $lockId = [guid]::NewGuid().ToString()
+            $processStart = (Get-Process -Id $PID).StartTime.ToUniversalTime()
+            try {
+                Write-PARJsonAtomic $ownerPath ([ordered]@{
+                    lockId = $lockId
+                    processId = $PID
+                    processStartTimeUtc = $processStart.ToString('o')
+                    processStartTimeUtcTicks = $processStart.Ticks
+                    acquiredAt = [DateTime]::UtcNow.ToString('o')
+                })
+            } catch {
+                Remove-Item -LiteralPath $lockPath -Recurse -Force -ErrorAction SilentlyContinue
+                throw
+            }
+            return @{
+                Path = $lockPath
+                LockId = $lockId
+            }
+        }
+
+        $ownerIsActive = $false
+        $ownerIsReadable = $false
+        if (Test-Path -LiteralPath $ownerPath -PathType Leaf) {
+            try {
+                $owner = Read-PARJson $ownerPath
+                $ownerIsReadable = $true
+                $ownerProcess = Get-Process -Id ([int] $owner.processId) -ErrorAction SilentlyContinue
+                if ($null -ne $ownerProcess) {
+                    $actualStartTicks = $ownerProcess.StartTime.ToUniversalTime().Ticks
+                    if ($owner.ContainsKey('processStartTimeUtcTicks')) {
+                        $recordedStartTicks = [long] $owner.processStartTimeUtcTicks
+                        $ownerIsActive = [Math]::Abs($actualStartTicks - $recordedStartTicks) -lt
+                            [TimeSpan]::TicksPerSecond
+                    } else {
+                        $ownerIsActive = $true
+                    }
+                }
+            } catch {
+                $ownerIsReadable = $false
+            }
+        }
+        if (-not $ownerIsReadable) {
+            $lockAge = [DateTime]::UtcNow - (Get-Item -LiteralPath $lockPath).LastWriteTimeUtc
+            $ownerIsActive = $lockAge.TotalSeconds -lt 30
+        }
+        if ($ownerIsActive) {
+            throw "Campaign-Lock ist bereits aktiv: $lockPath"
+        }
+
+        # Rename first so only one contender can reclaim a stale lock.
+        $stalePath = "$lockPath.stale.$([guid]::NewGuid().ToString('N'))"
+        try {
+            Move-Item -LiteralPath $lockPath -Destination $stalePath -ErrorAction Stop
+            Remove-Item -LiteralPath $stalePath -Recurse -Force
+        } catch {
+            Start-Sleep -Milliseconds 50
+        }
+    }
+    throw "Campaign-Lock konnte nicht sicher uebernommen werden: $lockPath"
+}
+
+function Exit-PARCampaignLock {
+    param([Parameter(Mandatory)][hashtable] $Lock)
+
+    $ownerPath = Join-Path ([string] $Lock.Path) 'owner.json'
+    if (-not (Test-Path -LiteralPath $ownerPath -PathType Leaf)) {
+        return
+    }
+    try {
+        $owner = Read-PARJson $ownerPath
+        if ([string] $owner.lockId -eq [string] $Lock.LockId) {
+            Remove-Item -LiteralPath ([string] $Lock.Path) -Recurse -Force
+        }
+    } catch {
+        return
+    }
+}
+
 function Get-PARSha256 {
     param([Parameter(Mandatory)][string] $Path)
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -798,13 +892,7 @@ function Invoke-PARStart {
         [switch] $IsResume
     )
 
-    [void](New-Item -ItemType Directory -Path $RuntimePath -Force)
-    $lockPath = Join-Path $RuntimePath 'campaign.lock'
-    try {
-        [void](New-Item -ItemType Directory -Path $lockPath -ErrorAction Stop)
-    } catch {
-        throw "Campaign-Lock ist bereits aktiv: $lockPath"
-    }
+    $campaignLock = Enter-PARCampaignLock $RuntimePath
 
     try {
         if (Test-Path -LiteralPath $StatePath -PathType Leaf) {
@@ -1052,9 +1140,7 @@ Do not infer remote, merge, bypass, cancellation, secret, or provider authority.
         Set-PARStateTimestamp $campaignState
         Write-PARJsonAtomic $StatePath $campaignState
     } finally {
-        if (Test-Path -LiteralPath $lockPath -PathType Container) {
-            Remove-Item -LiteralPath $lockPath -Force
-        }
+        Exit-PARCampaignLock $campaignLock
     }
 }
 
@@ -1310,7 +1396,7 @@ function Invoke-PARPostMergeActions {
     return $true
 }
 
-function Invoke-PARConsolidate {
+function Invoke-PARConsolidateCore {
     param(
         [Parameter(Mandatory)][hashtable] $Campaign,
         [Parameter(Mandatory)][hashtable] $Profiles,
@@ -1377,6 +1463,9 @@ function Invoke-PARConsolidate {
     Write-PARJsonAtomic $StatePath $campaignState
 
     foreach ($id in $eligibleIds) {
+        if (Test-PARConsolidationPause $campaignState $StatePath) {
+            return
+        }
         [void](Confirm-PARWorkerProviderState $Campaign $mergeProfile $campaignState $id $ManifestDirectory $RuntimePath $StatePath)
     }
     if (Test-PARConsolidationPause $campaignState $StatePath) {
@@ -1390,6 +1479,9 @@ function Invoke-PARConsolidate {
             continue
         }
         foreach ($remainingId in @($eligibleIds[$index..($eligibleIds.Count - 1)])) {
+            if (Test-PARConsolidationPause $campaignState $StatePath) {
+                return
+            }
             $remainingState = Get-PARWorkerState $campaignState ([string] $remainingId)
             if ($remainingState.status -ne 'Merged') {
                 [void](Confirm-PARWorkerProviderState $Campaign $mergeProfile $campaignState ([string] $remainingId) $ManifestDirectory $RuntimePath $StatePath)
@@ -1434,6 +1526,9 @@ function Invoke-PARConsolidate {
             -Attempt ([int] $workerState.mergeAttempt)
         Set-PARStateTimestamp $campaignState
         Write-PARJsonAtomic $StatePath $campaignState
+        if (Test-PARConsolidationPause $campaignState $StatePath) {
+            return
+        }
     }
 
     Set-PARCompletionFlags $campaignState
@@ -1461,6 +1556,29 @@ function Invoke-PARConsolidate {
         'Merge, synchronization, post-merge actions, and final validation completed.'
     Set-PARStateTimestamp $campaignState
     Write-PARJsonAtomic $StatePath $campaignState
+}
+
+function Invoke-PARConsolidate {
+    param(
+        [Parameter(Mandatory)][hashtable] $Campaign,
+        [Parameter(Mandatory)][hashtable] $Profiles,
+        [Parameter(Mandatory)][string] $ManifestPath,
+        [Parameter(Mandatory)][string] $StatePath,
+        [Parameter(Mandatory)][string] $ManifestDirectory,
+        [Parameter(Mandatory)][string] $RuntimePath,
+        [string] $Selection = '',
+        [switch] $DoMerge,
+        [switch] $IsResume
+    )
+
+    $campaignLock = Enter-PARCampaignLock $RuntimePath
+
+    try {
+        Invoke-PARConsolidateCore $Campaign $Profiles $ManifestPath $StatePath `
+            $ManifestDirectory $RuntimePath $Selection -DoMerge:$DoMerge -IsResume:$IsResume
+    } finally {
+        Exit-PARCampaignLock $campaignLock
+    }
 }
 
 function Write-PARStatus {

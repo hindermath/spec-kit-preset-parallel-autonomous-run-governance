@@ -50,6 +50,10 @@ if ($Mode -eq 'Preflight') {
     }
     $worker.preflightCount = [int] $worker.preflightCount + 1
     Write-FixtureJson $state
+    if ($worker.ContainsKey('preflightDelayMilliseconds') -and
+        [int] $worker.preflightDelayMilliseconds -gt 0) {
+        Start-Sleep -Milliseconds ([int] $worker.preflightDelayMilliseconds)
+    }
     [ordered]@{
         schemaVersion = '1.1'
         prUrl = [string] $worker.prUrl

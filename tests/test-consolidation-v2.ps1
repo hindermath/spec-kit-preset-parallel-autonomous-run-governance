@@ -262,6 +262,7 @@ function New-TestCase {
             mergeFailuresRemaining = 0
             mergeDelayMilliseconds = 0
             postMergeDelayMilliseconds = 0
+            preflightDelayMilliseconds = 0
             preflightCount = 0
         }
     }
@@ -384,6 +385,58 @@ try {
     Assert-Test ($partialCompletedState.status -eq 'Completed') 'Partial merge resume did not complete'
     Assert-Test ([int] $partialCompletedState.workers[0].mergeAttempt -eq 1) 'Resume repeated an already verified merge'
 
+    $concurrentConsolidate = New-TestCase 'concurrent-consolidate-lock'
+    Update-ProviderWorker $concurrentConsolidate 'worker-00' { param($worker) $worker.mergeDelayMilliseconds = 5000 }
+    $firstConsolidate = Start-Process -FilePath 'pwsh' -ArgumentList @(
+        '-NoProfile', '-File', $coordinator,
+        '-Action', 'Consolidate',
+        '-Manifest', $concurrentConsolidate.Manifest,
+        '-RunnerConfig', $concurrentConsolidate.Runner,
+        '-State', $concurrentConsolidate.State,
+        '-RuntimeRoot', $concurrentConsolidate.Runtime,
+        '-Merge'
+    ) -PassThru
+    $consolidateLock = Join-Path $concurrentConsolidate.Runtime 'campaign.lock'
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+        Start-Sleep -Milliseconds 100
+        $consolidateLockObserved = Test-Path -LiteralPath $consolidateLock -PathType Container
+    } until ($consolidateLockObserved -or [DateTime]::UtcNow -gt $deadline)
+    Assert-Test $consolidateLockObserved 'Consolidate fixture did not acquire the campaign lock'
+    Invoke-TestConsolidate $concurrentConsolidate -ExpectFailure
+    $firstConsolidate.WaitForExit()
+    Assert-Test ($firstConsolidate.ExitCode -eq 0) 'First locked consolidation failed'
+    Assert-Test ((Read-TestState $concurrentConsolidate.State).status -eq 'Completed') `
+        'Concurrent consolidate lock changed the completed state'
+
+    $concurrentResume = New-TestCase 'concurrent-consolidation-resume-lock' -WorkerCount 2
+    Update-ProviderWorker $concurrentResume 'worker-01' { param($worker) $worker.mergeFailuresRemaining = 1 }
+    Invoke-TestConsolidate $concurrentResume -ExpectFailure
+    Update-ProviderWorker $concurrentResume 'worker-01' { param($worker) $worker.mergeDelayMilliseconds = 5000 }
+    $firstResume = Start-Process -FilePath 'pwsh' -ArgumentList @(
+        '-NoProfile', '-File', $coordinator,
+        '-Action', 'Resume',
+        '-Manifest', $concurrentResume.Manifest,
+        '-RunnerConfig', $concurrentResume.Runner,
+        '-State', $concurrentResume.State,
+        '-RuntimeRoot', $concurrentResume.Runtime
+    ) -PassThru
+    $resumeLock = Join-Path $concurrentResume.Runtime 'campaign.lock'
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+        Start-Sleep -Milliseconds 100
+        $resumeLockObserved = Test-Path -LiteralPath $resumeLock -PathType Container
+    } until ($resumeLockObserved -or [DateTime]::UtcNow -gt $deadline)
+    Assert-Test $resumeLockObserved 'Consolidation resume fixture did not acquire the campaign lock'
+    & pwsh -NoProfile -File $coordinator -Action Resume -Manifest $concurrentResume.Manifest `
+        -RunnerConfig $concurrentResume.Runner -State $concurrentResume.State `
+        -RuntimeRoot $concurrentResume.Runtime 2>$null | Out-Null
+    Assert-Test ($LASTEXITCODE -ne 0) 'Concurrent consolidation resume bypassed the campaign lock'
+    $firstResume.WaitForExit()
+    Assert-Test ($firstResume.ExitCode -eq 0) 'First locked consolidation resume failed'
+    Assert-Test ((Read-TestState $concurrentResume.State).status -eq 'Completed') `
+        'Concurrent consolidation resume lock changed the completed state'
+
     $stacked = New-TestCase 'stacked-base-revalidation' -WorkerCount 3 -SharedRepository
     Update-ProviderWorker $stacked 'worker-01' {
         param($worker)
@@ -427,6 +480,39 @@ try {
     Assert-Test ($pausedMergeState.postMergeActions[0].status -eq 'Pending') 'Post-merge action started after stop'
     Invoke-TestResume $stopDuringMerge
     Assert-Test ((Read-TestState $stopDuringMerge.State).status -eq 'Completed') 'Stop-during-merge resume did not complete'
+
+    $stopDuringPreflight = New-TestCase 'stop-between-provider-preflights' -WorkerCount 2
+    Update-ProviderWorker $stopDuringPreflight 'worker-00' { param($worker) $worker.preflightDelayMilliseconds = 1200 }
+    $preflightProcess = Start-Process -FilePath 'pwsh' -ArgumentList @(
+        '-NoProfile', '-File', $coordinator,
+        '-Action', 'Consolidate',
+        '-Manifest', $stopDuringPreflight.Manifest,
+        '-RunnerConfig', $stopDuringPreflight.Runner,
+        '-State', $stopDuringPreflight.State,
+        '-RuntimeRoot', $stopDuringPreflight.Runtime,
+        '-Merge'
+    ) -PassThru
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+        Start-Sleep -Milliseconds 100
+        $firstPreflightStarted =
+            [int](Read-TestState $stopDuringPreflight.ProviderState).workers['worker-00'].preflightCount -gt 0
+    } until ($firstPreflightStarted -or [DateTime]::UtcNow -gt $deadline)
+    Assert-Test $firstPreflightStarted 'Stop-between-preflights fixture did not enter the first preflight'
+    & pwsh -NoProfile -File $coordinator -Action Stop -Manifest $stopDuringPreflight.Manifest `
+        -State $stopDuringPreflight.State | Out-Null
+    Assert-Test ($LASTEXITCODE -eq 0) 'Stop command failed during provider preflight'
+    $preflightProcess.WaitForExit()
+    Assert-Test ($preflightProcess.ExitCode -eq 0) 'Cooperatively stopped preflight process failed'
+    $preflightPausedState = Read-TestState $stopDuringPreflight.State
+    $preflightProviderState = Read-TestState $stopDuringPreflight.ProviderState
+    Assert-Test ($preflightPausedState.status -eq 'PausedByUser') `
+        'Stop between provider preflights did not reach PausedByUser'
+    Assert-Test ([int] $preflightProviderState.workers['worker-01'].preflightCount -eq 0) `
+        'A second provider preflight started after the stop request'
+    Invoke-TestResume $stopDuringPreflight
+    Assert-Test ((Read-TestState $stopDuringPreflight.State).status -eq 'Completed') `
+        'Stop-between-preflights resume did not complete'
 
     $processAbort = New-TestCase 'process-abort-adoption'
     Update-ProviderWorker $processAbort 'worker-00' { param($worker) $worker.postMergeDelayMilliseconds = 3000 }
