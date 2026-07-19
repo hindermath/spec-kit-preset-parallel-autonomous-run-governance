@@ -42,6 +42,9 @@ if ([string] $worker.prUrl -ne $PrUrl) {
 }
 
 if ($Mode -eq 'Preflight') {
+    if ([string]::IsNullOrWhiteSpace($OutputFile)) {
+        throw '-OutputFile is required in Preflight mode.'
+    }
     if (-not $worker.ContainsKey('preflightCount')) {
         $worker.preflightCount = 0
     }

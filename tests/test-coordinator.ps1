@@ -254,6 +254,15 @@ try {
     & pwsh -NoProfile -File $coordinator -Action Validate -Manifest $invalidConcurrencyPath -RunnerConfig $script:runnerConfig 2>$null
     Assert-Test ($LASTEXITCODE -ne 0) 'Concurrency above three was accepted'
 
+    $legacyMergeCampaign = Get-TestCampaign 'legacy-merge-read' 'ReplicatedTargets' @(
+        (Get-TestWorker 'legacy-merge-a' $pipelineRepo)
+    ) -DeliveryMode 'MergeAndSync'
+    [void]$legacyMergeCampaign.consolidation.Remove('mergeProfile')
+    $legacyMergePath = Join-Path $tempRoot 'legacy-merge-read.json'
+    Write-Data $legacyMergePath $legacyMergeCampaign
+    & pwsh -NoProfile -File $coordinator -Action Validate -Manifest $legacyMergePath -RunnerConfig $script:runnerConfig | Out-Null
+    Assert-Test ($LASTEXITCODE -eq 0) 'Schema 1.0 MergeAndSync manifest without mergeProfile was not readable'
+
     $stopRepo = Initialize-TestRepository 'stop-resume-repo'
     $stopWorkers = 1..3 | ForEach-Object { Get-TestWorker "stop-0$_" $stopRepo }
     $stopCampaign = Get-TestCampaign 'stop-resume' 'IndependentFeatures' $stopWorkers

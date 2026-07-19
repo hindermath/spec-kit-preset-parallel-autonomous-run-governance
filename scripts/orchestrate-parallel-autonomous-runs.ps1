@@ -421,10 +421,14 @@ function Test-PARCampaign {
     }
 
     if ($Campaign.deliveryMode -eq 'MergeAndSync') {
-        Assert-PARCondition $Campaign.consolidation.ContainsKey('mergeProfile') 'consolidation.mergeProfile fehlt.'
-        $mergeProfileName = [string] $Campaign.consolidation.mergeProfile
-        Assert-PARCondition ($Profiles.ContainsKey('mergeProfiles') -and
-            $Profiles.mergeProfiles.ContainsKey($mergeProfileName)) "Merge-Profil '$mergeProfileName' fehlt."
+        if ([string] $Campaign.schemaVersion -eq '1.1') {
+            Assert-PARCondition $Campaign.consolidation.ContainsKey('mergeProfile') 'consolidation.mergeProfile fehlt.'
+        }
+        if ($Campaign.consolidation.ContainsKey('mergeProfile')) {
+            $mergeProfileName = [string] $Campaign.consolidation.mergeProfile
+            Assert-PARCondition ($Profiles.ContainsKey('mergeProfiles') -and
+                $Profiles.mergeProfiles.ContainsKey($mergeProfileName)) "Merge-Profil '$mergeProfileName' fehlt."
+        }
         if ([string] $Campaign.schemaVersion -eq '1.1') {
             $mergeProfile = $Profiles.mergeProfiles[$mergeProfileName]
             Assert-PARCondition (-not [string]::IsNullOrWhiteSpace([string] $mergeProfile.provider)) `
@@ -1364,6 +1368,7 @@ function Invoke-PARConsolidate {
     $campaignState.phase = 'MergeAndSync'
     Add-PARStateEvent $campaignState 'ConsolidationStarted' 'Provider-gated consolidation started.' `
         -Attempt ([int] $campaignState.attempts.consolidation)
+    Set-PARStateTimestamp $campaignState
     Write-PARJsonAtomic $StatePath $campaignState
 
     foreach ($id in $eligibleIds) {

@@ -47,11 +47,20 @@ Neue Templates verwenden Schema `1.1`. Der Koordinator liest weiterhin
 Kampagnen-, Runner-, State- und Worker-Result-Artefakte in Schema `1.0`.
 Schema `1.1` ergaenzt Worker-spezifische Runner-Profile, nicht geheime
 Statusmetadaten, Provider-Preflights, Versuchshistorie und Post-Merge-Aktionen.
+Ein historisches Schema-1.0-`MergeAndSync`-Manifest bleibt lesbar und kann bis
+`ReadyForConsolidation` fortgefuehrt werden. Ein echter Merge erfordert jedoch
+die explizite Migration auf den providergebundenen Preflight-Vertrag und die
+Post-Merge-Aktionen aus Schema `1.1`; die unsichere Legacy-Mergeform wird nicht
+automatisch ausgefuehrt.
 
 *New templates emit schema `1.1`. The coordinator continues to read schema
 `1.0` campaign, runner, state, and worker-result artifacts. Schema `1.1` adds
 per-worker runner profiles, non-secret status metadata, provider preflights,
-attempt history, and post-merge actions.*
+attempt history, and post-merge actions. A historical schema `1.0`
+`MergeAndSync` manifest remains readable and may advance to
+`ReadyForConsolidation`. Performing a merge requires explicit migration to the
+schema `1.1` provider-preflight contract and post-merge actions; the unsafe
+legacy merge shape is never executed automatically.*
 
 ## Entwicklungs-Override / Development Override
 
