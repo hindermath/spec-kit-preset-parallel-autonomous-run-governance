@@ -2,10 +2,11 @@
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+preset_root="$(cd -- "$script_dir/.." && pwd)"
 
 case "${1:-}" in
   -h|--help)
-    cat <<'EOF'
+    cat <<EOF
 orchestrate-parallel-autonomous-runs.sh
 
 DE: Validiert und koordiniert isolierte autonome Spec-Kit-Kampagnen.
@@ -21,7 +22,7 @@ Status output:
   -OutputFormat Json|Text
 
 Documentation:
-  docs/man/orchestrate-parallel-autonomous-runs.1
+  $preset_root/docs/man/orchestrate-parallel-autonomous-runs.1
 EOF
     exit 0
     ;;
