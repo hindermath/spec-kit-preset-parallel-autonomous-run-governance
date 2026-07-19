@@ -471,6 +471,11 @@ function Test-PARCampaign {
     Assert-PARCondition ([int] $Campaign.maxConcurrency -ge 1 -and [int] $Campaign.maxConcurrency -le 3) 'maxConcurrency muss zwischen 1 und 3 liegen.'
     Assert-PARCondition (@($Campaign.workers).Count -gt 0) 'Mindestens ein Worker ist erforderlich.'
     Assert-PARCondition (-not [string]::IsNullOrWhiteSpace([string] $Campaign.runnerProfile)) 'Campaign runnerProfile fehlt.'
+    Assert-PARCondition ($Profiles.ContainsKey('profiles') -and $Profiles.profiles -is [hashtable]) `
+        'RunnerConfig profiles fehlt.'
+    $campaignRunnerProfile = [string] $Campaign.runnerProfile
+    Assert-PARCondition $Profiles.profiles.ContainsKey($campaignRunnerProfile) `
+        "Campaign-Runner-Fallback '$campaignRunnerProfile' fehlt."
     if ($Campaign.ContainsKey('operatorInstructions')) {
         Assert-PARCondition ($Campaign.operatorInstructions -is [string]) 'operatorInstructions muss eine Zeichenkette sein.'
         Assert-PARCondition (([string] $Campaign.operatorInstructions).Length -le 8000) 'operatorInstructions ist laenger als 8000 Zeichen.'
@@ -1734,6 +1739,7 @@ $runtimePath = [IO.Path]::GetFullPath($RuntimeRoot)
 
 if ($Action -eq 'Status') {
     $statusData = Read-PARJson $statePath
+    Assert-PARCondition ($statusData.campaignId -eq $campaign.campaignId) 'State campaignId stimmt nicht.'
     Write-PARStatus $campaign $statusData $OutputFormat
     exit 0
 }

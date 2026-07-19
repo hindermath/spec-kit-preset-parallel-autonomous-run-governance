@@ -375,6 +375,9 @@ try {
     $mismatchedState = Read-TestState $campaignMismatch.State
     $mismatchedState.campaignId = [guid]::NewGuid().ToString()
     Write-TestJson $campaignMismatch.State $mismatchedState
+    & pwsh -NoProfile -File $coordinator -Action Status -Manifest $campaignMismatch.Manifest `
+        -State $campaignMismatch.State -OutputFormat Text 2>$null | Out-Null
+    Assert-Test ($LASTEXITCODE -ne 0) 'Status accepted a state from another campaign'
     Invoke-TestConsolidate $campaignMismatch -ExpectFailure
     Assert-Test ((Read-TestState $campaignMismatch.State).status -eq 'ReadyForConsolidation') `
         'Campaign ID mismatch modified the campaign state before rejection'

@@ -254,6 +254,17 @@ try {
     & pwsh -NoProfile -File $coordinator -Action Validate -Manifest $invalidConcurrencyPath -RunnerConfig $script:runnerConfig 2>$null
     Assert-Test ($LASTEXITCODE -ne 0) 'Concurrency above three was accepted'
 
+    $invalidFallback = Get-TestCampaign 'missing-campaign-fallback' 'ReplicatedTargets' @(
+        (Get-TestWorker 'fallback-a' $pipelineRepo)
+    )
+    $invalidFallback.runnerProfile = 'missing-profile'
+    $invalidFallback.workers[0].runnerProfile = 'fixture'
+    $invalidFallbackPath = Join-Path $tempRoot 'invalid-campaign-fallback.json'
+    Write-Data $invalidFallbackPath $invalidFallback
+    & pwsh -NoProfile -File $coordinator -Action Validate -Manifest $invalidFallbackPath `
+        -RunnerConfig $script:runnerConfig 2>$null
+    Assert-Test ($LASTEXITCODE -ne 0) 'Missing campaign fallback profile was accepted'
+
     $legacyMergeCampaign = Get-TestCampaign 'legacy-merge-read' 'ReplicatedTargets' @(
         (Get-TestWorker 'legacy-merge-a' $pipelineRepo)
     ) -DeliveryMode 'MergeAndSync'

@@ -3,7 +3,7 @@
 orchestrate-parallel-autonomous-runs \- validate and coordinate isolated autonomous Spec Kit campaigns
 .SH SYNOPSIS
 .B orchestrate-parallel-autonomous-runs.sh
--Action ACTION -Manifest PATH -RunnerConfig PATH [OPTIONS]
+-Action ACTION -Manifest PATH [-RunnerConfig PATH] [OPTIONS]
 .SH BESCHREIBUNG / DESCRIPTION
 Validiert Kampagnenidentitaet, Repositories, Worker-DAG, Runner-Profile und
 Konsolidierungsregeln. Start erzeugt je Worker einen Branch und verknuepften
@@ -16,6 +16,10 @@ executes no more than three runner processes, and stores resumable aggregate
 state.
 .SH AKTIONEN / ACTIONS
 Validate, Start, Status, Stop, Resume, and Consolidate.
+.PP
+-RunnerConfig is required for Validate, Start, Resume, and Consolidate. Status
+and Stop validate campaign identity directly from Manifest and State and do not
+require runner configuration.
 .SH STATUS
 Status supports machine-readable JSON and accessible text with
 -OutputFormat Json or -OutputFormat Text.
