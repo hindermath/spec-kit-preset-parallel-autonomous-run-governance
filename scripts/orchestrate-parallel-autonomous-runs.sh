@@ -6,7 +6,7 @@ preset_root="$(cd -- "$script_dir/.." && pwd)"
 
 case "${1:-}" in
   -h|--help)
-    cat <<EOF
+    cat <<'EOF'
 orchestrate-parallel-autonomous-runs.sh
 
 DE: Validiert und koordiniert isolierte autonome Spec-Kit-Kampagnen.
@@ -22,8 +22,8 @@ Status output:
   -OutputFormat Json|Text
 
 Documentation:
-  $preset_root/docs/man/orchestrate-parallel-autonomous-runs.1
 EOF
+    printf '  %s/docs/man/orchestrate-parallel-autonomous-runs.1\n' "$preset_root"
     exit 0
     ;;
 esac
