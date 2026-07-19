@@ -1,3 +1,4 @@
+#Requires -Version 7.0
 [CmdletBinding()]
 param()
 
@@ -253,6 +254,26 @@ try {
     & pwsh -NoProfile -File $coordinator -Action Validate -Manifest $invalidConcurrencyPath -RunnerConfig $script:runnerConfig 2>$null
     Assert-Test ($LASTEXITCODE -ne 0) 'Concurrency above three was accepted'
 
+    $invalidFallback = Get-TestCampaign 'missing-campaign-fallback' 'ReplicatedTargets' @(
+        (Get-TestWorker 'fallback-a' $pipelineRepo)
+    )
+    $invalidFallback.runnerProfile = 'missing-profile'
+    $invalidFallback.workers[0].runnerProfile = 'fixture'
+    $invalidFallbackPath = Join-Path $tempRoot 'invalid-campaign-fallback.json'
+    Write-Data $invalidFallbackPath $invalidFallback
+    & pwsh -NoProfile -File $coordinator -Action Validate -Manifest $invalidFallbackPath `
+        -RunnerConfig $script:runnerConfig 2>$null
+    Assert-Test ($LASTEXITCODE -ne 0) 'Missing campaign fallback profile was accepted'
+
+    $legacyMergeCampaign = Get-TestCampaign 'legacy-merge-read' 'ReplicatedTargets' @(
+        (Get-TestWorker 'legacy-merge-a' $pipelineRepo)
+    ) -DeliveryMode 'MergeAndSync'
+    [void]$legacyMergeCampaign.consolidation.Remove('mergeProfile')
+    $legacyMergePath = Join-Path $tempRoot 'legacy-merge-read.json'
+    Write-Data $legacyMergePath $legacyMergeCampaign
+    & pwsh -NoProfile -File $coordinator -Action Validate -Manifest $legacyMergePath -RunnerConfig $script:runnerConfig | Out-Null
+    Assert-Test ($LASTEXITCODE -eq 0) 'Schema 1.0 MergeAndSync manifest without mergeProfile was not readable'
+
     $stopRepo = Initialize-TestRepository 'stop-resume-repo'
     $stopWorkers = 1..3 | ForEach-Object { Get-TestWorker "stop-0$_" $stopRepo }
     $stopCampaign = Get-TestCampaign 'stop-resume' 'IndependentFeatures' $stopWorkers
@@ -283,16 +304,40 @@ try {
     } until ($runningObserved -or [DateTime]::UtcNow -gt $deadline)
     Assert-Test $runningObserved 'Stop fixture did not observe a running worker'
     & pwsh -NoProfile -File $coordinator -Action Stop -Manifest $stopManifest -State $stopState | Out-Null
+    $stopMarker = "$stopState.stop-requested"
+    Assert-Test (Test-Path -LiteralPath $stopMarker -PathType Leaf) `
+        'Stop did not persist the durable request marker'
     $startProcess.WaitForExit()
     Assert-Test ($startProcess.ExitCode -eq 0) 'Cooperative stop start process failed'
     $pausedState = Get-Content -LiteralPath $stopState -Raw | ConvertFrom-Json
     Assert-Test ($pausedState.status -eq 'PausedByUser') 'Campaign did not reach PausedByUser'
+    Assert-Test (@($pausedState.events | Where-Object type -in @('StopRequested', 'StopRequestObserved')).Count -ge 1) `
+        'Paused state did not retain durable stop evidence'
     Assert-Test (@($pausedState.workers | Where-Object status -eq 'Completed').Count -eq 1) 'Running worker did not reach its safe boundary'
     Assert-Test (@($pausedState.workers | Where-Object status -eq 'Pending').Count -eq 2) 'Cooperative stop started extra workers'
-    & pwsh -NoProfile -File $coordinator -Action Resume -Manifest $stopManifest -RunnerConfig $script:runnerConfig -State $stopState -RuntimeRoot $stopRuntime | Out-Null
-    Assert-Test ($LASTEXITCODE -eq 0) 'Campaign resume failed'
+    $resumeProcess = Start-Process -FilePath 'pwsh' -ArgumentList @(
+        '-NoProfile', '-File', $coordinator,
+        '-Action', 'Resume',
+        '-Manifest', $stopManifest,
+        '-RunnerConfig', $script:runnerConfig,
+        '-State', $stopState,
+        '-RuntimeRoot', $stopRuntime
+    ) -PassThru
+    $resumeLock = Join-Path $stopRuntime 'campaign.lock'
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+        Start-Sleep -Milliseconds 100
+        $resumeLockObserved = Test-Path -LiteralPath $resumeLock -PathType Container
+    } until ($resumeLockObserved -or [DateTime]::UtcNow -gt $deadline)
+    Assert-Test $resumeLockObserved 'Resume fixture did not acquire the campaign lock'
+    & pwsh -NoProfile -File $coordinator -Action Resume -Manifest $stopManifest -RunnerConfig $script:runnerConfig -State $stopState -RuntimeRoot $stopRuntime 2>$null
+    Assert-Test ($LASTEXITCODE -ne 0) 'Concurrent second resume bypassed the campaign lock'
+    $resumeProcess.WaitForExit()
+    Assert-Test ($resumeProcess.ExitCode -eq 0) 'Campaign resume failed'
     $resumedState = Get-Content -LiteralPath $stopState -Raw | ConvertFrom-Json
     Assert-Test ($resumedState.status -eq 'Completed') 'Resumed campaign did not complete'
+    Assert-Test (-not (Test-Path -LiteralPath $stopMarker)) 'Resume did not clear the durable stop marker'
+    Assert-Test (@($resumedState.workers | Where-Object status -eq 'Completed').Count -eq 3) 'Concurrent resume changed the completed worker set'
 
     Write-Output 'PASS: all parallel autonomous coordinator fixtures passed.'
 } finally {

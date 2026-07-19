@@ -1,7 +1,8 @@
 # Native macOS Real-Agent Smoke Evidence
 
 Date: `2026-07-18`
-Preset version: `0.1.0`
+Preset version under test: `0.1.0`
+Current successor documented by this repository: `0.2.0`
 Agent family: `Codex`
 Execution environment: native macOS development host
 Delivery mode: `LocalImplementation`
@@ -56,10 +57,12 @@ own handoff. Maximum observed pipeline concurrency was two.
 ## Decision
 
 The four topologies, bounded scheduling, explicit alternative selection, and
-hashed pipeline handoffs are ready for the larger native Secure CaseTracker
-field campaign. Version `0.1.0` remains experimental and opt-in until that
-field campaign is complete.
+hashed pipeline handoffs were ready for the larger native Secure CaseTracker
+field campaign. The tested `0.1.0` artifact remained experimental at this
+checkpoint.
 
-The field preflight subsequently identified that sequential units in one
-repository need to inherit the exact predecessor head. Version `0.1.1` adds
-the validated `baseWorkerId` contract before the Secure CaseTracker campaign.
+The subsequent field preflight identified that sequential units in one
+repository need to inherit the exact predecessor head. Version `0.1.1` added
+the validated `baseWorkerId` contract, and `0.1.2` completed publication
+alignment before the field campaign. These are historical checkpoints; field
+findings are promoted in `0.2.0`.

@@ -1,3 +1,4 @@
+#Requires -Version 7.0
 <#
 .SYNOPSIS
     Fuehrt 13 reale autonome Spec-Kit-Smoke-Worker nativ auf macOS aus.

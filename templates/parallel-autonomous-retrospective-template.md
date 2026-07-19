@@ -1,6 +1,6 @@
-# Parallel Autonomous Campaign Retrospective
+# Retrospektive einer parallelen autonomen Kampagne / Parallel Autonomous Campaign Retrospective
 
-## Identity
+## Identitaet / Identity
 
 | Field | Value |
 |---|---|
@@ -9,14 +9,19 @@
 | Workers | `[count]` |
 | Maximum observed concurrency | `[count]` |
 
-## Evidence-Based Findings
+## Evidenzbasierte Erkenntnisse / Evidence-Based Findings
 
 | Finding | Repeated evidence | Permission impact | Decision |
 |---|---|---|---|
 | `[finding]` | `[paths and runs]` | `[None/Low/Medium/High]` | `[Promote/ObserveAgain/NoPromotion]` |
 
-## Boundaries
+## Grenzen / Boundaries
 
-Separate provider, repository, language, and model-specific observations from
-portable orchestration rules. Do not promote a convenience rule that weakens
-isolation, evidence, exact-head proof, or explicit authority.
+Provider-, Repository-, Sprach-, Plattform- und modellspezifische Beobachtungen
+von portablen Orchestrierungsregeln trennen. Keine Komfortregel uebernehmen,
+die Isolation, Evidenz, exakten Head-Nachweis oder ausdrueckliche Berechtigung
+schwaecht.
+
+*Separate provider, repository, language, platform, and model-specific
+observations from portable orchestration rules. Do not promote a convenience
+rule that weakens isolation, evidence, exact-head proof, or explicit authority.*

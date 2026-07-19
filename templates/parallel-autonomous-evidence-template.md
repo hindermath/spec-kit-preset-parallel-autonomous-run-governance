@@ -1,6 +1,6 @@
-# Parallel Autonomous Campaign Evidence
+# Evidenz einer parallelen autonomen Kampagne / Parallel Autonomous Campaign Evidence
 
-## Campaign
+## Kampagne / Campaign
 
 | Field | Value |
 |---|---|
@@ -13,20 +13,26 @@
 | Configured concurrency | `[count]` |
 | Maximum observed concurrency | `[count]` |
 
-## Workers
+## Worker / Workers
 
 | Worker | Run ID | Repository | Head | Autonomous state | Gates | Result |
 |---|---|---|---|---|---|---|
 | `[id]` | `[UUID]` | `[repo]` | `[sha]` | `[path + hash]` | `[evidence]` | `[status]` |
 
-## Handoffs
+## Uebergaben / Handoffs
 
 | Producer | Consumer | Path | SHA-256 | Validation |
 |---|---|---|---|---|
 | `[worker]` | `[worker]` | `[path]` | `[sha256]` | `[Pass/Open]` |
 
-## Consolidation
+## Konsolidierung / Consolidation
 
-Record the all-ready barrier, human alternative selection where applicable,
-deterministic merge order, each exact reviewed head, and any partial remote
-state. Evidence documents authority but never grants it.
+Die All-ready-Barriere, gegebenenfalls die menschliche Alternativauswahl, die
+deterministische Merge-Reihenfolge, jeden exakt geprueften Head, Provider-
+Preflights, Teilmerges, Stop/Resume und alle Post-Merge-Aktionen dokumentieren.
+Evidenz beschreibt Berechtigung, erteilt sie aber nicht.
+
+*Record the all-ready barrier, human alternative selection where applicable,
+deterministic merge order, every exact reviewed head, provider preflights,
+partial merges, stop/resume, and all post-merge actions. Evidence documents
+authority but never grants it.*
