@@ -1322,6 +1322,46 @@ function Set-PARCompletionFlags {
         $validationActions.Count -gt 0 -and @($validationActions | Where-Object status -ne 'Succeeded').Count -eq 0
 }
 
+function Assert-PARPostMergeStateContract {
+    param(
+        [Parameter(Mandatory)][hashtable] $Campaign,
+        [Parameter(Mandatory)][hashtable] $Profiles,
+        [Parameter(Mandatory)][hashtable] $CampaignState
+    )
+
+    Assert-PARCondition ($Campaign.ContainsKey('postMergeActions') -and
+        $Campaign.postMergeActions -is [object[]]) 'Geprueftes Manifest enthaelt keinen Post-Merge-Vertrag.'
+    Assert-PARCondition ($Profiles.ContainsKey('postMergeProfiles') -and
+        $Profiles.postMergeProfiles -is [hashtable]) 'RunnerConfig enthaelt keine Post-Merge-Profile.'
+    $manifestActions = @($Campaign.postMergeActions)
+    $stateActions = @($CampaignState.postMergeActions)
+    Assert-PARCondition ($stateActions.Count -eq $manifestActions.Count) `
+        'State-Post-Merge-Aktionen stimmen nicht mit dem geprueften Manifest ueberein.'
+    $stateActionIds = @($stateActions | ForEach-Object { [string] $_.actionId })
+    Assert-PARCondition (@($stateActionIds | Sort-Object -Unique).Count -eq $stateActionIds.Count) `
+        'State-Post-Merge-Aktions-IDs muessen eindeutig sein.'
+
+    foreach ($actionState in $stateActions) {
+        $actionId = [string] $actionState.actionId
+        Assert-PARCondition (-not [string]::IsNullOrWhiteSpace($actionId)) `
+            'State-Post-Merge-Aktion enthaelt keine actionId.'
+        $matchingActions = @($manifestActions | Where-Object actionId -eq $actionId)
+        Assert-PARCondition ($matchingActions.Count -eq 1) `
+            "State-Post-Merge-Aktion '$actionId' ist nicht im geprueften Manifest deklariert."
+        $action = $matchingActions[0]
+        foreach ($property in @('workerId', 'phase', 'profile')) {
+            Assert-PARCondition ([string] $actionState[$property] -eq [string] $action[$property]) `
+                "State-Post-Merge-Aktion '$actionId' weicht bei '$property' vom geprueften Manifest ab."
+        }
+        $profileName = [string] $action.profile
+        Assert-PARCondition ($Profiles.postMergeProfiles.ContainsKey($profileName) -and
+            $Profiles.postMergeProfiles[$profileName] -is [hashtable]) `
+            "Post-Merge-Profil '$profileName' fehlt in der geprueften RunnerConfig."
+        Assert-PARCondition ([bool] $Profiles.postMergeProfiles[$profileName].idempotent) `
+            "Post-Merge-Profil '$profileName' muss idempotent sein."
+    }
+}
+
 function Invoke-PARPostMergeActions {
     param(
         [Parameter(Mandatory)][hashtable] $Campaign,
@@ -1334,6 +1374,7 @@ function Invoke-PARPostMergeActions {
 
     Assert-PARCondition (@($CampaignState.postMergeActions).Count -gt 0) `
         'Post-Merge-Vertrag fehlt; Completed darf ohne Synchronisation und Abschlussvalidierung nicht gesetzt werden.'
+    Assert-PARPostMergeStateContract $Campaign $Profiles $CampaignState
     $CampaignState.attempts.postMerge = [int] $CampaignState.attempts.postMerge + 1
     foreach ($phase in @('Synchronize', 'PostMerge', 'Validate')) {
         foreach ($actionState in @($CampaignState.postMergeActions | Where-Object phase -eq $phase)) {
@@ -1347,8 +1388,6 @@ function Invoke-PARPostMergeActions {
             $worker = Get-PARCampaignWorker $Campaign ([string] $action.workerId)
             $workerState = Get-PARWorkerState $CampaignState ([string] $action.workerId)
             $postMergeProfile = $Profiles.postMergeProfiles[[string] $action.profile]
-            Assert-PARCondition ([bool] $postMergeProfile.idempotent) `
-                "Post-Merge-Profil '$($action.profile)' muss idempotent sein."
             $repository = Resolve-PARRepository ([string] $worker.repository) $ManifestDirectory
             $values = @{
                 campaignId = [string] $Campaign.campaignId
@@ -1426,6 +1465,9 @@ function Invoke-PARConsolidateCore {
     Assert-PARCondition ($campaignState.manifestSha256 -eq (Get-PARSha256 $ManifestPath)) `
         'Manifest hat sich seit dem State-Checkpoint geaendert.'
     Initialize-PARStateShape $campaignState $Campaign $Profiles
+    if ($DoMerge) {
+        Assert-PARPostMergeStateContract $Campaign $Profiles $campaignState
+    }
     $eligibleIds = @($Campaign.consolidation.mergeOrder)
     if ($Campaign.topology -eq 'AlternativeSolutions') {
         if ([string]::IsNullOrWhiteSpace($Selection) -and

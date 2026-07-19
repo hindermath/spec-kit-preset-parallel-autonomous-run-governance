@@ -379,6 +379,21 @@ try {
     Assert-Test ((Read-TestState $campaignMismatch.State).status -eq 'ReadyForConsolidation') `
         'Campaign ID mismatch modified the campaign state before rejection'
 
+    $postMergeStateDrift = New-TestCase 'post-merge-state-contract-drift'
+    $driftedPostMergeState = Read-TestState $postMergeStateDrift.State
+    $driftedPostMergeState.postMergeActions[0].actionId = 'undeclared-action'
+    Write-TestJson $postMergeStateDrift.State $driftedPostMergeState
+    Invoke-TestConsolidate $postMergeStateDrift -ExpectFailure
+    $rejectedPostMergeState = Read-TestState $postMergeStateDrift.State
+    $rejectedProviderState = Read-TestState $postMergeStateDrift.ProviderState
+    $rejectedActionFixture = Read-TestState $postMergeStateDrift.PostMergeState
+    Assert-Test ($rejectedPostMergeState.status -eq 'ReadyForConsolidation') `
+        'Post-merge state drift modified the campaign before rejection'
+    Assert-Test ($rejectedProviderState.workers['worker-00'].state -eq 'Open') `
+        'Post-merge state drift reached a remote merge'
+    Assert-Test (@($rejectedActionFixture.actions.Values | Where-Object attemptCount -ne 0).Count -eq 0) `
+        'Post-merge state drift started an undeclared action'
+
     $partial = New-TestCase 'partial-merge-resume' -WorkerCount 2
     Update-ProviderWorker $partial 'worker-01' { param($worker) $worker.mergeFailuresRemaining = 1 }
     Invoke-TestConsolidate $partial -ExpectFailure
