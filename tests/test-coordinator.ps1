@@ -293,10 +293,15 @@ try {
     } until ($runningObserved -or [DateTime]::UtcNow -gt $deadline)
     Assert-Test $runningObserved 'Stop fixture did not observe a running worker'
     & pwsh -NoProfile -File $coordinator -Action Stop -Manifest $stopManifest -State $stopState | Out-Null
+    $stopMarker = "$stopState.stop-requested"
+    Assert-Test (Test-Path -LiteralPath $stopMarker -PathType Leaf) `
+        'Stop did not persist the durable request marker'
     $startProcess.WaitForExit()
     Assert-Test ($startProcess.ExitCode -eq 0) 'Cooperative stop start process failed'
     $pausedState = Get-Content -LiteralPath $stopState -Raw | ConvertFrom-Json
     Assert-Test ($pausedState.status -eq 'PausedByUser') 'Campaign did not reach PausedByUser'
+    Assert-Test (@($pausedState.events | Where-Object type -in @('StopRequested', 'StopRequestObserved')).Count -ge 1) `
+        'Paused state did not retain durable stop evidence'
     Assert-Test (@($pausedState.workers | Where-Object status -eq 'Completed').Count -eq 1) 'Running worker did not reach its safe boundary'
     Assert-Test (@($pausedState.workers | Where-Object status -eq 'Pending').Count -eq 2) 'Cooperative stop started extra workers'
     $resumeProcess = Start-Process -FilePath 'pwsh' -ArgumentList @(
@@ -320,6 +325,7 @@ try {
     Assert-Test ($resumeProcess.ExitCode -eq 0) 'Campaign resume failed'
     $resumedState = Get-Content -LiteralPath $stopState -Raw | ConvertFrom-Json
     Assert-Test ($resumedState.status -eq 'Completed') 'Resumed campaign did not complete'
+    Assert-Test (-not (Test-Path -LiteralPath $stopMarker)) 'Resume did not clear the durable stop marker'
     Assert-Test (@($resumedState.workers | Where-Object status -eq 'Completed').Count -eq 3) 'Concurrent resume changed the completed worker set'
 
     Write-Output 'PASS: all parallel autonomous coordinator fixtures passed.'

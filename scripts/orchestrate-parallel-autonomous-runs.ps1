@@ -368,6 +368,11 @@ function Sync-PARStopRequest {
         [Parameter(Mandatory)][string] $StatePath
     )
 
+    $stopWasRequested = [bool] $CampaignState.stopRequested
+    $markerPath = "$([IO.Path]::GetFullPath($StatePath)).stop-requested"
+    if (Test-Path -LiteralPath $markerPath -PathType Leaf) {
+        $CampaignState.stopRequested = $true
+    }
     if (-not (Test-Path -LiteralPath $StatePath -PathType Leaf)) {
         return
     }
@@ -379,6 +384,10 @@ function Sync-PARStopRequest {
         [int] $diskState.eventSequence -gt [int] $CampaignState.eventSequence) {
         $CampaignState.eventSequence = [int] $diskState.eventSequence
         $CampaignState.events = @($diskState.events)
+    }
+    if (-not $stopWasRequested -and [bool] $CampaignState.stopRequested) {
+        Add-PARStateEvent $CampaignState 'StopRequestObserved' `
+            'Durable cooperative stop request observed by the active coordinator.'
     }
 }
 
@@ -927,8 +936,10 @@ function Invoke-PARStart {
                     $workerState.summary = 'Revalidated for resume.'
                 }
             }
-            $campaignState.stopRequested = $false
         }
+        Remove-Item -LiteralPath "$([IO.Path]::GetFullPath($StatePath)).stop-requested" `
+            -Force -ErrorAction SilentlyContinue
+        $campaignState.stopRequested = $false
 
         $campaignState.attempts.execute = [int] $campaignState.attempts.execute + 1
         $campaignState.status = 'Active'
@@ -949,6 +960,7 @@ function Invoke-PARStart {
 
         while ($true) {
             $campaignState = Read-PARJson $StatePath
+            Sync-PARStopRequest $campaignState $StatePath
             $madeProgress = $false
 
             foreach ($worker in $Campaign.workers) {
@@ -1025,7 +1037,7 @@ function Invoke-PARStart {
                 $resultInstructions = if ($Campaign.deliveryMode -eq 'MergeAndSync') {
                     @"
 The campaign retains all merge authority. Your worker delivery boundary is PublishPR: commit, push, create the PR, but do not merge it.
-	Before finishing, write worker-result schema 1.1 to: $resultPath
+Before finishing, write worker-result schema 1.1 to: $resultPath
 Set status ReadyForMerge, headSha to the exact pushed head, prUrl to the created PR URL, autonomousStatePath and autonomousStateSha256 to the final state, and include every declared handoff with its SHA-256.
 "@
                 } else {
@@ -1113,6 +1125,7 @@ Do not infer remote, merge, bypass, cancellation, secret, or provider authority.
                 $madeProgress = $true
             }
 
+            Sync-PARStopRequest $campaignState $StatePath
             Set-PARStateTimestamp $campaignState
             Write-PARJsonAtomic $StatePath $campaignState
 
@@ -1511,6 +1524,8 @@ function Invoke-PARConsolidateCore {
         'MergeAndSync erfordert ab v0.2.0 ein separates merge-Profil.'
     $campaignState.attempts.consolidation = [int] $campaignState.attempts.consolidation + 1
     if ($IsResume) {
+        Remove-Item -LiteralPath "$([IO.Path]::GetFullPath($StatePath)).stop-requested" `
+            -Force -ErrorAction SilentlyContinue
         $campaignState.stopRequested = $false
     }
     $campaignState.status = 'Merging'
@@ -1726,6 +1741,11 @@ if ($Action -eq 'Status') {
 if ($Action -eq 'Stop') {
     $statusData = Read-PARJson $statePath
     Assert-PARCondition ($statusData.campaignId -eq $campaign.campaignId) 'State campaignId stimmt nicht.'
+    [IO.File]::WriteAllText(
+        "$statePath.stop-requested",
+        [DateTime]::UtcNow.ToString('o'),
+        [Text.UTF8Encoding]::new($false)
+    )
     $statusData.stopRequested = $true
     Add-PARStateEvent $statusData 'StopRequested' 'Cooperative stop requested; no process was killed.'
     Set-PARStateTimestamp $statusData
