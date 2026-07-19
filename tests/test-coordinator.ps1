@@ -1,3 +1,4 @@
+#Requires -Version 7.0
 [CmdletBinding()]
 param()
 
@@ -289,10 +290,28 @@ try {
     Assert-Test ($pausedState.status -eq 'PausedByUser') 'Campaign did not reach PausedByUser'
     Assert-Test (@($pausedState.workers | Where-Object status -eq 'Completed').Count -eq 1) 'Running worker did not reach its safe boundary'
     Assert-Test (@($pausedState.workers | Where-Object status -eq 'Pending').Count -eq 2) 'Cooperative stop started extra workers'
-    & pwsh -NoProfile -File $coordinator -Action Resume -Manifest $stopManifest -RunnerConfig $script:runnerConfig -State $stopState -RuntimeRoot $stopRuntime | Out-Null
-    Assert-Test ($LASTEXITCODE -eq 0) 'Campaign resume failed'
+    $resumeProcess = Start-Process -FilePath 'pwsh' -ArgumentList @(
+        '-NoProfile', '-File', $coordinator,
+        '-Action', 'Resume',
+        '-Manifest', $stopManifest,
+        '-RunnerConfig', $script:runnerConfig,
+        '-State', $stopState,
+        '-RuntimeRoot', $stopRuntime
+    ) -PassThru
+    $resumeLock = Join-Path $stopRuntime 'campaign.lock'
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+        Start-Sleep -Milliseconds 100
+        $resumeLockObserved = Test-Path -LiteralPath $resumeLock -PathType Container
+    } until ($resumeLockObserved -or [DateTime]::UtcNow -gt $deadline)
+    Assert-Test $resumeLockObserved 'Resume fixture did not acquire the campaign lock'
+    & pwsh -NoProfile -File $coordinator -Action Resume -Manifest $stopManifest -RunnerConfig $script:runnerConfig -State $stopState -RuntimeRoot $stopRuntime 2>$null
+    Assert-Test ($LASTEXITCODE -ne 0) 'Concurrent second resume bypassed the campaign lock'
+    $resumeProcess.WaitForExit()
+    Assert-Test ($resumeProcess.ExitCode -eq 0) 'Campaign resume failed'
     $resumedState = Get-Content -LiteralPath $stopState -Raw | ConvertFrom-Json
     Assert-Test ($resumedState.status -eq 'Completed') 'Resumed campaign did not complete'
+    Assert-Test (@($resumedState.workers | Where-Object status -eq 'Completed').Count -eq 3) 'Concurrent resume changed the completed worker set'
 
     Write-Output 'PASS: all parallel autonomous coordinator fixtures passed.'
 } finally {

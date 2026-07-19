@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "1.0",
+  "schemaVersion": "1.1",
   "campaignId": "00000000-0000-0000-0000-000000000000",
   "name": "replace-with-campaign-name",
   "topology": "ReplicatedTargets",
@@ -17,6 +17,7 @@
       "baseWorkerId": null,
       "branch": "parallel/campaign/worker-01",
       "featureInput": "path/to/intake.md",
+      "runnerProfile": null,
       "dependsOn": [],
       "handoffs": [
         {
@@ -31,6 +32,21 @@
     "mergeOrder": [
       "worker-01"
     ],
-    "humanSelectionRequired": false
-  }
+    "humanSelectionRequired": false,
+    "mergeProfile": "github-pr"
+  },
+  "postMergeActions": [
+    {
+      "actionId": "sync-worker-01",
+      "workerId": "worker-01",
+      "phase": "Synchronize",
+      "profile": "git-sync-main"
+    },
+    {
+      "actionId": "validate-worker-01",
+      "workerId": "worker-01",
+      "phase": "Validate",
+      "profile": "validate-main"
+    }
+  ]
 }

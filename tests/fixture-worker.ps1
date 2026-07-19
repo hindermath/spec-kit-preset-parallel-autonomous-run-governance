@@ -1,3 +1,4 @@
+#Requires -Version 7.0
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string] $CampaignId,
@@ -5,7 +6,7 @@ param(
     [Parameter(Mandatory)][string] $RunId,
     [Parameter(Mandatory)][string] $Worktree,
     [Parameter(Mandatory)][string] $ResultFile,
-    [ValidateSet('Completed', 'ReadyForMerge', 'Fail')]
+    [ValidateSet('Completed', 'ReadyForMerge', 'Failed')]
     [string] $Mode = 'Completed',
     [string] $HandoffsJson = '[]',
     [int] $DelayMilliseconds = 100
@@ -15,7 +16,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 Start-Sleep -Milliseconds $DelayMilliseconds
-if ($Mode -eq 'Fail') {
+if ($Mode -eq 'Failed') {
     Write-Error "Intentional fixture failure for $WorkerId"
 }
 
@@ -42,7 +43,13 @@ foreach ($handoff in $handoffDeclarations) {
         campaignId = $CampaignId
     } | ConvertTo-Json | Set-Content -LiteralPath $handoffPath -Encoding utf8NoBOM
     & git -C $Worktree add -- ([string] $handoff.path)
+    if ($LASTEXITCODE -ne 0) {
+        throw "git add failed for handoff '$($handoff.path)'"
+    }
     & git -C $Worktree commit -m "test: handoff $WorkerId to $($handoff.consumerWorkerId)" | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "git commit failed for handoff '$($handoff.path)'"
+    }
     $head = (& git -C $Worktree rev-parse HEAD).Trim()
     $handoffResults += [ordered]@{
         consumerWorkerId = [string] $handoff.consumerWorkerId
@@ -54,7 +61,7 @@ foreach ($handoff in $handoffDeclarations) {
 $parent = Split-Path -Parent $ResultFile
 [void](New-Item -ItemType Directory -Path $parent -Force)
 [ordered]@{
-    schemaVersion = '1.0'
+    schemaVersion = '1.1'
     campaignId = $CampaignId
     workerId = $WorkerId
     runId = $RunId
