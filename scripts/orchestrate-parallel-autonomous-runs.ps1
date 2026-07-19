@@ -145,6 +145,11 @@ function Enter-PARCampaignLock {
             }
         }
 
+        if (-not (Test-Path -LiteralPath $lockPath -PathType Container)) {
+            Start-Sleep -Milliseconds 25
+            continue
+        }
+
         $ownerIsActive = $false
         $ownerIsReadable = $false
         if (Test-Path -LiteralPath $ownerPath -PathType Leaf) {
@@ -167,7 +172,13 @@ function Enter-PARCampaignLock {
             }
         }
         if (-not $ownerIsReadable) {
-            $lockAge = [DateTime]::UtcNow - (Get-Item -LiteralPath $lockPath).LastWriteTimeUtc
+            try {
+                $lockItem = Get-Item -LiteralPath $lockPath -ErrorAction Stop
+            } catch {
+                Start-Sleep -Milliseconds 25
+                continue
+            }
+            $lockAge = [DateTime]::UtcNow - $lockItem.LastWriteTimeUtc
             $ownerIsActive = $lockAge.TotalSeconds -lt 30
         }
         if ($ownerIsActive) {
@@ -1427,9 +1438,14 @@ function Invoke-PARConsolidateCore {
         $campaignState.selectedWorkerId = $Selection
     }
 
+    $eligibleStatuses = if ($DoMerge) {
+        @('Completed', 'ReadyForMerge', 'Merged', 'NeedsRevalidation')
+    } else {
+        @('Completed', 'ReadyForMerge', 'Merged')
+    }
     foreach ($id in $eligibleIds) {
         $workerState = Get-PARWorkerState $campaignState $id
-        Assert-PARCondition ($workerState.status -in @('Completed', 'ReadyForMerge', 'Merged', 'NeedsRevalidation')) `
+        Assert-PARCondition ($workerState.status -in $eligibleStatuses) `
             "Worker '$id' ist nicht konsolidierungsbereit."
     }
 
@@ -1669,8 +1685,6 @@ if ($Action -eq 'Stop') {
     $statusData = Read-PARJson $statePath
     Assert-PARCondition ($statusData.campaignId -eq $campaign.campaignId) 'State campaignId stimmt nicht.'
     $statusData.stopRequested = $true
-    $statusData.status = 'StopRequested'
-    $statusData.phase = 'Stopping'
     Add-PARStateEvent $statusData 'StopRequested' 'Cooperative stop requested; no process was killed.'
     Set-PARStateTimestamp $statusData
     Write-PARJsonAtomic $statePath $statusData

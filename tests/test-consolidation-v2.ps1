@@ -343,6 +343,11 @@ try {
     Update-ProviderWorker $headDrift 'worker-00' { param($worker) $worker.headSha = '0000000000000000000000000000000000000000' }
     Invoke-TestConsolidate $headDrift -ExpectFailure
     Assert-Test ((Read-TestState $headDrift.State).status -eq 'NeedsRevalidation') 'Head drift did not require revalidation'
+    & pwsh -NoProfile -File $coordinator -Action Consolidate -Manifest $headDrift.Manifest `
+        -RunnerConfig $headDrift.Runner -State $headDrift.State -RuntimeRoot $headDrift.Runtime 2>$null | Out-Null
+    Assert-Test ($LASTEXITCODE -ne 0) 'Consolidation without merge hid NeedsRevalidation'
+    Assert-Test ((Read-TestState $headDrift.State).status -eq 'NeedsRevalidation') `
+        'Consolidation without merge overwrote NeedsRevalidation'
 
     $openReview = New-TestCase 'open-review'
     Update-ProviderWorker $openReview 'worker-00' { param($worker) $worker.unresolvedCurrentThreads = 1 }
@@ -548,6 +553,16 @@ try {
     $postMergeFailedState = Read-TestState $postMergeFailure.State
     Assert-Test ($postMergeFailedState.status -eq 'SynchronizationFailed') 'Post-merge failure state is incorrect'
     Assert-Test ($postMergeFailedState.workers[0].status -eq 'Merged') 'Post-merge failure lost verified merge'
+    $postMergeFailedPhase = [string] $postMergeFailedState.phase
+    & pwsh -NoProfile -File $coordinator -Action Stop -Manifest $postMergeFailure.Manifest `
+        -State $postMergeFailure.State | Out-Null
+    Assert-Test ($LASTEXITCODE -eq 0) 'Stop request failed after post-merge failure'
+    $stoppedPostMergeState = Read-TestState $postMergeFailure.State
+    Assert-Test ($stoppedPostMergeState.status -eq 'SynchronizationFailed') `
+        'Stop request overwrote the resumable consolidation status'
+    Assert-Test ([string] $stoppedPostMergeState.phase -eq $postMergeFailedPhase) `
+        'Stop request overwrote the resumable consolidation phase'
+    Assert-Test ([bool] $stoppedPostMergeState.stopRequested) 'Stop request flag was not persisted'
     Invoke-TestResume $postMergeFailure
     $postMergeResumedState = Read-TestState $postMergeFailure.State
     Assert-Test ($postMergeResumedState.status -eq 'Completed') 'Post-merge failure resume did not complete'
