@@ -20,6 +20,9 @@ does not grant execution or remote authority.*
 ## Installation / Installation
 
 ```bash
+specify preset add \
+  --from https://github.com/hindermath/spec-kit-preset-parallel-autonomous-run-governance/archive/refs/tags/v0.2.0.zip \
+  --priority 80
 specify preset add --dev /path/to/parallel-autonomous-run-governance --priority 80
 specify preset info parallel-autonomous-run-governance
 ```
