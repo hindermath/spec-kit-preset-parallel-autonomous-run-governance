@@ -314,7 +314,8 @@ function Get-PARWorkerRoutingRole {
         -not [string]::IsNullOrWhiteSpace([string] $Worker.routingRole)) {
         return [string] $Worker.routingRole
     }
-    if ($Campaign.ContainsKey('routingRole')) {
+    if ($Campaign.ContainsKey('routingRole') -and
+        -not [string]::IsNullOrWhiteSpace([string] $Campaign.routingRole)) {
         return [string] $Campaign.routingRole
     }
     return $script:UndeclaredRunnerMetadata
@@ -628,7 +629,7 @@ function Test-PARCampaign {
         Assert-PARCondition ([string] $Campaign.fallbackPolicy -eq 'fail-closed') `
             'fallbackPolicy darf nur fail-closed sein.'
     }
-    $allowedRoutingRoles = @('fast-mechanical', 'long-running-implementation', 'coding-review', 'frontier-reasoning')
+    $allowedRoutingRoles = @('fast-mechanical', 'long-running-implementation', 'coding-review', 'frontier-reasoning', 'script-only')
     if ($strictRouting) {
         Assert-PARCondition ($allowedRoutingRoles -contains [string] $Campaign.routingRole) `
             'Campaign routingRole fehlt oder ist ungueltig.'

@@ -13,7 +13,7 @@ inputs, but every worker still needs an applicability row.
 - Das deklarierte Parallelitaetslimit niemals ueberschreiten.
 - Runner als Executable plus Argument-Array ohne Shell-Auswertung ausfuehren.
 - Worker-spezifische Runner-Profile duerfen das Kampagnenprofil ueberschreiben.
-  Ihre stabile Routing-Rolle muss zur Worker- oder Kampagnenrolle passen.
+- Ihre stabile Routing-Rolle muss zur Worker- oder Kampagnenrolle passen.
 - Bei `fail-closed` Modell, Reasoning-Aufwand und read-only Preflight
   verbindlich pruefen. Bei Abweichung den Worker vor Prozessstart blockieren.
 - Bei normalen Worker-Fehlern unabhaengige Worker bis zur sicheren Grenze
