@@ -5,7 +5,7 @@ Permission-bounded coordination for several isolated autonomous Spec Kit runs.
 Version `0.2.6` | Priority `80` | Spec Kit `>=0.8.3`
 
 Version 0.2.6 aligns current installation examples with Autonomous Run
-Governance 0.3.6. Campaign, authority, and model-routing contracts are
+Governance 0.3.6. Campaign, authority, and `model-routing.json` contracts are
 unchanged.
 Required worker preset: `autonomous-run-governance >=0.2.2`
 
