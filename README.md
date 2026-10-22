@@ -1,5 +1,26 @@
 # Parallel Autonomous Run Governance
 
+## Unveroeffentlicht: gemeinsame Modellauswahl / Unreleased shared selection
+
+Ein lokales Worker-Profil darf `dynamicRoutingConfig` als Pfad zu einer explizit
+genehmigten Schema-3-Konfiguration angeben. Der Worker deklariert zusaetzlich
+`routingRequirements` fuer `speckit.autonomous`. Das Campaign-Manifest muss
+`fallbackPolicy: fail-closed` verwenden. Der gemeinsame, im Worker-Repository
+installierte Model-Routing-Kern entscheidet; keine zweite Auswahlheuristik.
+Konto-/Projektbindung, isolierter Worktree, nativer Identitaetsnachweis und alle
+bisherigen Kampagnen-, Handoff-, Review- und Delivery-Gates bleiben bindend.
+Native Output-Konformitaet ist vor dem ersten kostenpflichtigen Probeaufruf
+separat nachzuweisen. Statische Profile bleiben unveraendert nutzbar.
+
+A local worker profile may declare dynamicRoutingConfig pointing to an
+explicitly approved schema-3 configuration. Each worker supplies explicit
+routingRequirements for speckit.autonomous; the campaign must fail closed.
+The worker repository's shared installed engine selects, never a duplicate
+campaign heuristic. Account/project/worktree bindings, native identity proof
+and existing campaign, handoff, review and delivery gates remain mandatory.
+Prove native output conformance separately before spending an access probe.
+Legacy static profiles remain supported. No release or campaign is started.
+
 Patch **0.2.7** liefert die verbesserte zweisprachige Einstiegs- und
 Kompositionsdokumentation. Verhalten und Berechtigungsgrenzen bleiben erhalten.
 [Release-Nachweis / Release record](docs/release-0.2.7-validation.md).

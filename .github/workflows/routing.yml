@@ -1,0 +1,25 @@
+name: Parallel offline routing regression
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  offline:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Native coordinator and consolidation fixtures (no inference)
+        shell: pwsh
+        run: |
+          ./tests/test-coordinator.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./tests/test-consolidation-v2.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git diff --exit-code

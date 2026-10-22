@@ -83,6 +83,23 @@ function Read-PARJson {
     return Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -AsHashtable
 }
 
+function Get-PARDynamicProfile {
+    param([hashtable] $Descriptor, [hashtable] $Worker, [hashtable] $Campaign, [string] $ManifestDirectory, [string]$ExecutionRoot='')
+    $repository = Resolve-PARRepository ([string]$Worker.repository) $ManifestDirectory
+    $root = Join-Path $repository '.specify/presets'
+    $engine = Join-Path $root 'model-routing-governance/scripts/dynamic-model-routing.psm1'
+    Assert-PARCondition (Test-Path -LiteralPath $engine -PathType Leaf) 'Shared dynamic routing engine missing; no separate campaign selector or static fallback.'
+    Import-Module $engine -Force
+    $path = [IO.Path]::GetFullPath([string]$Descriptor.dynamicRoutingConfig, $ManifestDirectory)
+    $config = Read-MRDocument $path
+    Assert-PARCondition ([string]$config.schemaVersion -eq '3.0') 'Explicit schema-3 worker configuration required.'
+    Assert-PARCondition ($Worker.ContainsKey('routingRequirements')) 'Worker routingRequirements missing.'
+    $phase = @{command='speckit.autonomous';routingRole=(Get-PARWorkerRoutingRole $Campaign $Worker);routingRequirements=$Worker.routingRequirements}
+    $result = Resolve-MRPhaseProfile -Config $config -Phase $phase -RoutingRoot $root -ProjectRoot $repository -ExecutionRoot $ExecutionRoot
+    $result.configPath = $path
+    return $result
+}
+
 function Assert-PARSchemaVersion {
     param(
         [Parameter(Mandatory)][hashtable] $Data,
@@ -660,6 +677,10 @@ function Test-PARCampaign {
         $runnerProfileName = Get-PARRunnerProfileName $Campaign $worker
         Assert-PARCondition $Profiles.profiles.ContainsKey($runnerProfileName) "Runner-Profil '$runnerProfileName' fuer Worker '$($worker.workerId)' fehlt."
         $runnerProfileData = $Profiles.profiles[$runnerProfileName]
+        if ($runnerProfileData.ContainsKey('dynamicRoutingConfig')) {
+            Assert-PARCondition $strictRouting 'Dynamic workers require explicit fail-closed campaign routing.'
+            $runnerProfileData = (Get-PARDynamicProfile $runnerProfileData $worker $Campaign $ManifestDirectory).data
+        }
         Assert-PARCondition (-not [string]::IsNullOrWhiteSpace([string] $runnerProfileData.executable)) "Runner executable fehlt: $runnerProfileName"
         Assert-PARCondition ($runnerProfileData.arguments -is [object[]]) "Runner arguments muss ein Array sein: $runnerProfileName"
         if ([string] $Campaign.schemaVersion -in @('1.1', '1.2')) {
@@ -1028,6 +1049,12 @@ function Complete-PARWorker {
         return
     }
 
+    if ($RunningEntry.ContainsKey('DynamicSelection') -and $null -ne $RunningEntry.DynamicSelection) {
+        $receipt = Get-MRNativeReceipt -Output @($stdout -split "`n") -Selection $RunningEntry.DynamicSelection.selection
+        Test-MRExecutionIdentity $receipt $RunningEntry.DynamicSelection.selection
+        $WorkerState.routingExecutionReceipt = $receipt
+    }
+
     if (-not (Test-Path -LiteralPath $ResultPath -PathType Leaf)) {
         $head = (Invoke-PARGit $RunningEntry.Worktree @('rev-parse', 'HEAD')).Output[0]
         $autonomousStates = @(Get-ChildItem -LiteralPath (Join-Path $RunningEntry.Worktree 'specs') -Filter 'autonomous-run-state.json' -File -Recurse -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc -Descending)
@@ -1213,6 +1240,15 @@ function Invoke-PARStart {
 
                 $runnerProfileName = Get-PARRunnerProfileName $Campaign $worker
                 $runnerProfileData = $Profiles.profiles[$runnerProfileName]
+                $dynamicSelection = $null
+                if ($runnerProfileData.ContainsKey('dynamicRoutingConfig')) {
+                    $dynamicSelection = Get-PARDynamicProfile $runnerProfileData $worker $Campaign $ManifestDirectory
+                    $runnerProfileData = $dynamicSelection.data
+                    $workerState.routingSelection = $dynamicSelection.selection
+                    $workerState.model = $runnerProfileData.model
+                    $workerState.reasoningEffort = $runnerProfileData.reasoningEffort
+                    $workerState.agentFamily = $runnerProfileData.agentFamily
+                }
                 $repository = Resolve-PARRepository ([string] $worker.repository) $ManifestDirectory
                 $worktree = Join-Path $worktreesRoot ([string] $worker.workerId)
                 if (-not (Test-Path -LiteralPath $worktree -PathType Container)) {
@@ -1297,6 +1333,7 @@ Do not infer remote, merge, bypass, cancellation, secret, or provider authority.
                     prompt = $prompt
                     promptFile = $promptPath
                     resultFile = $resultPath
+                    outputFile = $resultPath
                     resultDirectory = $resultsRoot
                     handoffsJson = $handoffsJson
                     model = if ($runnerProfileData.ContainsKey('model')) { [string] $runnerProfileData.model } else { '' }
@@ -1306,7 +1343,29 @@ Do not infer remote, merge, bypass, cancellation, secret, or provider authority.
                 $strictRouting = $Campaign.ContainsKey('fallbackPolicy') -and
                     [string] $Campaign.fallbackPolicy -eq 'fail-closed'
                 if ($strictRouting) {
-                    $modelPreflight = Invoke-PARProfileCommand $runnerProfileData.preflight $values $worktree
+                    if ($null -ne $dynamicSelection) {
+                        $dynamicSelection = Get-PARDynamicProfile $Profiles.profiles[$runnerProfileName] $worker $Campaign $ManifestDirectory -ExecutionRoot $worktree
+                        $runnerProfileData = $dynamicSelection.data
+                        $workerState.routingSelection = $dynamicSelection.selection
+                        $workerState.model = $runnerProfileData.model
+                        $workerState.reasoningEffort = $runnerProfileData.reasoningEffort
+                        $workerState.agentFamily = $runnerProfileData.agentFamily
+                        $values.model = $runnerProfileData.model
+                        $values.reasoningEffort = $runnerProfileData.reasoningEffort
+                    }
+                    if ($null -ne $dynamicSelection) {
+                        $probe = Invoke-MRBoundedProcess $runnerProfileData.preflight $values $worktree -TimeoutSeconds 120
+                        $modelPreflight = @{ExitCode=$probe.exitCode;Output=$probe.output}
+                        if ($modelPreflight.ExitCode -eq 0) {
+                            $receipt = Get-MRNativeReceipt -Output @($probe.output) -Selection $dynamicSelection.selection
+                            Test-MRExecutionIdentity $receipt $dynamicSelection.selection
+                            $workerState.routingPreflightReceipt = $receipt
+                            $fresh = Get-PARDynamicProfile $Profiles.profiles[$runnerProfileName] $worker $Campaign $ManifestDirectory -ExecutionRoot $worktree
+                            foreach ($key in @('candidateId','model','effort','contextSha256','policySha256','inventorySha256')) {
+                                Assert-PARCondition ($fresh.selection[$key] -ceq $dynamicSelection.selection[$key]) 'Worker routing changed after preflight.'
+                            }
+                        }
+                    } else { $modelPreflight = Invoke-PARProfileCommand $runnerProfileData.preflight $values $worktree }
                     $workerState.lastPreflightAt = [DateTime]::UtcNow.ToString('o')
                     if ([int] $modelPreflight.ExitCode -ne 0) {
                         $workerState.status = 'Blocked'
@@ -1336,6 +1395,8 @@ Do not infer remote, merge, bypass, cancellation, secret, or provider authority.
                     Worktree = $worktree
                     ResultPath = $resultPath
                     Process = $processInfo
+                    DynamicSelection = $dynamicSelection
+                    StartedAt = [DateTime]::UtcNow
                 }
                 if ($running.Count -gt [int] $campaignState.maximumObservedConcurrency) {
                     $campaignState.maximumObservedConcurrency = $running.Count
@@ -1346,6 +1407,10 @@ Do not infer remote, merge, bypass, cancellation, secret, or provider authority.
             foreach ($workerId in @($running.Keys)) {
                 $entry = $running[$workerId]
                 if (-not $entry.Process.Process.HasExited) {
+                    if ($entry.ContainsKey('DynamicSelection') -and $null -ne $entry.DynamicSelection -and
+                        ([DateTime]::UtcNow - $entry.StartedAt).TotalSeconds -gt $entry.DynamicSelection.data.timeoutSeconds) {
+                        $entry.Process.Process.Kill($true)
+                    }
                     continue
                 }
                 $workerState = Get-PARWorkerState $campaignState $workerId
