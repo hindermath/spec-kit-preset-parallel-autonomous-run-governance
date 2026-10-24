@@ -1,6 +1,6 @@
 # Versionierung und Kompatibilitaet / Versioning and Compatibility
 
-<!-- current-package: 0.2.8 -->
+<!-- current-package: 0.2.9 -->
 
 DE: Paket 0.2.8 ist inzwischen regulär veröffentlicht; [aktueller Release-Abschluss](release-0.2.8-validation.md). Die unten datierten Tabellen bewahren den historischen Prüfstand vor Veröffentlichung. Mindestversion, Beispielkombination und tatsächlich geprüfte Kombination bleiben getrennt; dieser Nachlauf behauptet keinen neuen Kombinationstest.
 
