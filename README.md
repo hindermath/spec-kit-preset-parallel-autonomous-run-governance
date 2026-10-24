@@ -1,18 +1,22 @@
 # Parallel Autonomous Run Governance
 
-<!-- current-package: 0.2.8 -->
+<!-- current-package: 0.2.9 -->
+
+Paketkennung: **v0.2.9**. [Vorbereitung und Veröffentlichungsgrenze](docs/release-0.2.9-validation.md). Die Release-Seite und der externe Archivnachweis belegen die Veröffentlichung, nicht dieser Vorbereitungsstand. Frühere Versionsnachweise unten bleiben historisch.
+
+<span lang="en">Package identity: v0.2.9. The release page and external archive evidence prove publication, not this preparation snapshot. Earlier version records below remain historical.</span>
 
 [Release-Abschluss und Verbesserungsprofil / Publication closeout and improvement profile](docs/release-0.2.8-validation.md).
 
-Der spätere Dokumentationsnachlauf auf main ändert das bestehende Tag-ZIP nicht.
+Der unten verlinkte Basispaket-Nachweis bleibt historisch; dieses Paket nimmt die Quellenkorrekturen als neue Version auf.
 
-<span lang="en">The later main-branch documentation follow-up does not change the existing tag archive.</span>
+<span lang="en">The linked base-package evidence remains historical; this package includes the source corrections as a new version.</span>
 
 **Leserpfad / Reader path:** [Deutsch: Einstieg, Begriffe und Fehlerhilfe](docs/user-guide.md) · [English: start, terms and troubleshooting](docs/user-guide.EN.md).
 
-Veröffentlichtes Paket **v0.2.8**. Der [Release-Stand](https://github.com/hindermath/spec-kit-preset-parallel-autonomous-run-governance/releases) wird getrennt geprüft; ein Commit auf main ist noch keine Veröffentlichung oder Installation.
+Historisches Basispaket **v0.2.8**. Der [Release-Stand](https://github.com/hindermath/spec-kit-preset-parallel-autonomous-run-governance/releases) wird getrennt geprüft; ein Commit auf main ist noch keine Veröffentlichung oder Installation.
 
-*Published package v0.2.8. The release page records actual publication separately; a main-branch commit is not publication or installation.*
+*Historical base package v0.2.8. The release page records actual publication separately; a main-branch commit is not publication or installation.*
 
 
 Patch **0.2.8** liefert die verbesserte zweisprachige Einstiegs- und
@@ -24,7 +28,7 @@ guide. Behavior and authority boundaries remain unchanged.*
 
 Permission-bounded coordination for several isolated autonomous Spec Kit runs.
 
-Version `0.2.8` | Priority `80` | Spec Kit `>=0.8.3`
+Version `0.2.9` | Priority `80` | Spec Kit `>=0.8.3`
 
 Historical note: version 0.2.6 aligned its installation examples with
 Autonomous Run Governance 0.3.6. The current documentation candidate uses
@@ -136,8 +140,8 @@ Fuer regulaere Kampagnen gilt:
 1. Preset 7, danach Preset 8 installieren:
 
    ```bash
-   specify preset add --from https://github.com/hindermath/spec-kit-preset-autonomous-run-governance/archive/refs/tags/v0.4.6.zip --priority 70
-   specify preset add --from https://github.com/hindermath/spec-kit-preset-parallel-autonomous-run-governance/archive/refs/tags/v0.2.8.zip --priority 80
+   specify preset add --from https://github.com/hindermath/spec-kit-preset-autonomous-run-governance/archive/refs/tags/v0.4.7.zip --priority 70
+   specify preset add --from https://github.com/hindermath/spec-kit-preset-parallel-autonomous-run-governance/archive/refs/tags/v0.2.9.zip --priority 80
    ```
 
 2. Beide Presets pruefen:

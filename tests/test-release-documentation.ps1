@@ -39,7 +39,7 @@ switch($id){
         foreach($archive in $ownArchives){Assert-Documentation ($archive.Groups[1].Value -ceq $version) 'first-run examples never silently install previous own version'}
         if($id -ceq 'parallel-autonomous-run-governance'){
             foreach($text in @($readme,$guide)){
-                Assert-Documentation ($text.Contains('spec-kit-preset-autonomous-run-governance/archive/refs/tags/v0.4.6.zip')) 'current recommended worker pair'
+                Assert-Documentation ($text.Contains('spec-kit-preset-autonomous-run-governance/archive/refs/tags/v0.4.7.zip')) 'current recommended worker pair'
                 Assert-Documentation (-not $text.Contains('spec-kit-preset-autonomous-run-governance/archive/refs/tags/v0.3.6.zip')) 'old worker archive not presented as current install'
             }
         }
