@@ -183,6 +183,20 @@ try {
     Assert-DependencyTest ($LASTEXITCODE -ne 0 -and
         ($outsideCheckpoint -join ' ') -match 'Campaign-State muss direkt') `
         'Operational campaign accepted a checkpoint outside RuntimeRoot.'
+    if (-not $IsWindows) {
+        $nestedRuntime = Join-Path $repository 'nested-runtime'
+        [void](New-Item -ItemType Directory -Path $nestedRuntime -Force)
+        $parentAlias = Join-Path $tempRoot 'repository-parent-alias'
+        $runtimeAlias = Join-Path $tempRoot 'nested-runtime-alias'
+        [void](New-Item -ItemType SymbolicLink -Path $parentAlias -Target $repository)
+        [void](New-Item -ItemType SymbolicLink -Path $runtimeAlias -Target (Join-Path $parentAlias 'nested-runtime'))
+        $nestedCheckpoint = @(& pwsh -NoProfile -File $coordinator -Action Start `
+            -Manifest $manifest -RunnerConfig $runnerConfig -State (Join-Path $runtimeAlias 'state.json') `
+            -RuntimeRoot $runtimeAlias 2>&1)
+        Assert-DependencyTest ($LASTEXITCODE -ne 0 -and
+            ($nestedCheckpoint -join ' ') -match 'RuntimeRoot muss ausserhalb') `
+            'Nested symlink let an operational RuntimeRoot enter a worker repository.'
+    }
     $publishCampaign = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json -AsHashtable
     $publishCampaign.campaignId = [Guid]::NewGuid().ToString()
     $publishCampaign.deliveryMode = 'PublishPR'

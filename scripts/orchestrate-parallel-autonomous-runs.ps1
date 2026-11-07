@@ -394,8 +394,9 @@ function Get-PARExpectedPrIdentity {
 }
 
 function Resolve-PARPhysicalPath {
-    param([Parameter(Mandatory)][string] $Path)
+    param([Parameter(Mandatory)][string] $Path, [int] $Depth = 0)
 
+    Assert-PARCondition ($Depth -lt 32) 'Symlink-Pfad enthaelt zu viele Weiterleitungen.'
     $full = [IO.Path]::GetFullPath($Path)
     $root = [IO.Path]::GetPathRoot($full)
     $current = $root
@@ -405,7 +406,9 @@ function Resolve-PARPhysicalPath {
         if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
             $resolved = $entry.ResolveLinkTarget($true)
             Assert-PARCondition ($null -ne $resolved) "Symlink kann nicht aufgeloest werden: $current"
-            $current = $resolved.FullName
+            # A final link target can still contain links in its parent path.
+            # Rewalk that entire target before appending later path segments.
+            $current = Resolve-PARPhysicalPath $resolved.FullName ($Depth + 1)
         }
     }
     return [IO.Path]::GetFullPath($current)
