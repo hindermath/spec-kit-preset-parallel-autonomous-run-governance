@@ -1115,6 +1115,53 @@ function Invoke-PARProcessAsync {
     }
 }
 
+function Confirm-PARAutonomousState {
+    param(
+        [Parameter(Mandatory)][hashtable] $Campaign,
+        [Parameter(Mandatory)][hashtable] $Worker,
+        [Parameter(Mandatory)][string] $Worktree,
+        [Parameter(Mandatory)][hashtable] $Result
+    )
+
+    if (-not [bool] $Campaign.requireAutonomousPreset -or [string] $Result.status -eq 'Failed') { return }
+    $relative = [string] $Result.autonomousStatePath
+    Assert-PARCondition (-not [string]::IsNullOrWhiteSpace($relative) -and $relative -ne 'N/A' -and
+        -not [IO.Path]::IsPathRooted($relative) -and $relative -notmatch '\\|(^|/)\.\.?(/|$)' -and
+        $relative -match '^specs/.+/autonomous-run-state\.json$') `
+        "Worker '$($Worker.workerId)' benoetigt einen worktree-relativen Autonomous-State-Pfad."
+    $root = Resolve-PARPhysicalPath $Worktree
+    $path = Resolve-PARPhysicalPath (Join-Path $root $relative)
+    $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    $prefix = $root.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    Assert-PARCondition ($path.StartsWith($prefix, $comparison) -and
+        (Test-Path -LiteralPath $path -PathType Leaf)) "Autonomous-State verlaesst den Worker-Checkout: $relative"
+    Assert-PARCondition ([string] $Result.autonomousStateSha256 -match '^[0-9a-f]{64}$' -and
+        (Get-PARSha256 $path) -ceq [string] $Result.autonomousStateSha256) `
+        "Autonomous-State-Hash stimmt nicht mit dem Worker-Result ueberein: $relative"
+
+    # The validator beside this coordinator is trusted; never execute a worker-writable validator.
+    $presetParent = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+    $validatorCandidates = @(
+        (Join-Path $presetParent 'autonomous-run-governance/scripts/validate-autonomous-run-state.ps1'),
+        (Join-Path $presetParent 'spec-kit-preset-autonomous-run-governance/scripts/validate-autonomous-run-state.ps1')
+    )
+    $validator = @($validatorCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1)
+    Assert-PARCondition ($validator.Count -eq 1) 'Vertrauenswuerdiger Autonomous-State-Validator fehlt neben dem Coordinator.'
+    $validatorOutput = @(& pwsh -NoProfile -File $validator[0] -State $path 2>&1)
+    Assert-PARCondition ($LASTEXITCODE -eq 0) `
+        "Autonomous-State-Validator lehnt Worker '$($Worker.workerId)' ab: $($validatorOutput -join [Environment]::NewLine)"
+    $state = Read-PARJson $path
+    $expectedDelivery = if ($Campaign.deliveryMode -eq 'MergeAndSync') { 'PublishPR' } else { [string] $Campaign.deliveryMode }
+    $featureDirectory = [IO.Path]::GetRelativePath($root, (Split-Path -Parent $path)).Replace('\', '/')
+    Assert-PARCondition ([string] $state.runId -eq [string] $Worker.runId -and
+        [string] $state.branch -ceq [string] $Worker.branch -and
+        [string] $state.featurePath -ceq $featureDirectory -and
+        [string] $state.deliveryMode -ceq $expectedDelivery -and
+        [string] $state.status -ceq 'Completed' -and
+        $state.authorityRevalidationRequired -eq $false) `
+        "Autonomous-State ist nicht als abgeschlossener Lauf dieses Workers gebunden: $relative"
+}
+
 function Complete-PARWorker {
     param(
         [Parameter(Mandatory)][hashtable] $RunningEntry,
@@ -1191,6 +1238,7 @@ function Complete-PARWorker {
     }
     $actualHead = (Invoke-PARGit $RunningEntry.Worktree @('rev-parse', 'HEAD')).Output[0]
     Assert-PARCondition ($resultData.headSha -eq $actualHead) "Worker result headSha ist nicht der aktuelle Worktree-Head: $ResultPath"
+    Confirm-PARAutonomousState $Campaign $Worker $RunningEntry.Worktree $resultData
 
     $validatedHandoffs = @()
     foreach ($declaredHandoff in @($Worker.handoffs)) {
@@ -1642,6 +1690,7 @@ function Confirm-PARWorkerProviderState {
     $worker = Get-PARCampaignWorker $Campaign $WorkerId
     $workerState = Get-PARWorkerState $CampaignState $WorkerId
     try {
+        Confirm-PARAutonomousState $Campaign $worker ([string] $workerState.worktree) $workerState
         $preflight = Invoke-PARProviderPreflight $Campaign $MergeProfile $worker $workerState $ManifestDirectory $RuntimePath
         Sync-PARStopRequest $CampaignState $StatePath
         $workerState.providerState = [string] $preflight.state

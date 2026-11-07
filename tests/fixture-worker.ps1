@@ -6,6 +6,7 @@ param(
     [Parameter(Mandatory)][string] $RunId,
     [Parameter(Mandatory)][string] $AttemptId,
     [string] $ReportedAttemptId = '',
+    [switch] $WriteAutonomousState,
     [Parameter(Mandatory)][string] $Worktree,
     [Parameter(Mandatory)][string] $ResultFile,
     [ValidateSet('Completed', 'ReadyForMerge', 'Failed')]
@@ -67,6 +68,27 @@ foreach ($handoff in $handoffDeclarations) {
 
 $parent = Split-Path -Parent $ResultFile
 [void](New-Item -ItemType Directory -Path $parent -Force)
+$stateRelative = 'N/A'
+$stateHash = 'N/A'
+if ($WriteAutonomousState) {
+    $stateRelative = 'specs/fixture/autonomous-run-state.json'
+    $statePath = Join-Path $Worktree $stateRelative
+    [void](New-Item -ItemType Directory -Path (Split-Path -Parent $statePath) -Force)
+    $branch = (& git -C $Worktree branch --show-current).Trim()
+    [ordered]@{
+        schemaVersion = '1.1'; runId = $RunId; featurePath = 'specs/fixture'; branch = $branch
+        deliveryMode = 'LocalImplementation'; authorityRevalidationRequired = $false
+        stage = 'Validate'; status = 'Completed'; checkpointCommit = 'N/A'; acceptedArtifacts = @()
+        tasks = [ordered]@{ path = 'N/A'; sha256 = 'N/A'; completed = 0; total = 0 }
+        routing = [ordered]@{ policy = 'balanced-v1'; fallbackPolicy = 'fail-closed'; phases = @() }
+        lastPassingGate = 'N/A'; nextExactAction = 'N/A'
+        lastOperation = [ordered]@{ kind = 'N/A'; state = 'N/A'; summary = 'Fixture completed.' }
+        stop = [ordered]@{ reason = 'N/A'; requestedAt = 'N/A'; safeBoundary = 'N/A' }
+        closeout = [ordered]@{ mergeOrPublication = 'N/A'; defaultBranchSync = 'N/A'; postMergeActions = 'N/A'; finalValidation = 'Completed' }
+        updatedAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+    } | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $statePath -Encoding utf8NoBOM
+    $stateHash = (Get-FileHash -LiteralPath $statePath -Algorithm SHA256).Hash.ToLowerInvariant()
+}
 [ordered]@{
     schemaVersion = '1.1'
     campaignId = $CampaignId
@@ -75,8 +97,8 @@ $parent = Split-Path -Parent $ResultFile
     attemptId = if ($ReportedAttemptId) { $ReportedAttemptId } else { $AttemptId }
     status = $Mode
     headSha = $head
-    autonomousStatePath = 'N/A'
-    autonomousStateSha256 = 'N/A'
+    autonomousStatePath = $stateRelative
+    autonomousStateSha256 = $stateHash
     evidencePath = "result-$WorkerId.md"
     prUrl = if ($Mode -eq 'ReadyForMerge') { "https://example.invalid/pr/$WorkerId" } else { $null }
     handoffs = @($handoffResults)

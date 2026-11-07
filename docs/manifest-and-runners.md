@@ -35,6 +35,16 @@ Each worker launch receives a fresh random `attemptId` and its own result
 path. An explicit result must carry that exact ID, so a previous Resume
 result cannot be replayed.
 
+Bei aktivem Autonomous-Preset-Gate muss jedes erfolgreiche Worker-Ergebnis
+einen vollständig validierten `autonomous-run-state.json` im eigenen Worktree
+mit passendem Hash, Run-ID, Branch, Delivery-Modus und abgeschlossenem Status
+belegen. Vor einem Merge wird dieser Nachweis erneut geprüft.
+
+When the Autonomous preset gate is active, every successful worker result
+must bind a fully validated `autonomous-run-state.json` inside its worktree
+to the claimed hash, run ID, branch, delivery mode, and completed status.
+The coordinator checks that evidence again before merging.
+
 [Handbuch / Manual](README.md) | [Lebenszyklus / Lifecycle](lifecycle-and-operations.md)
 
 ## Kampagnenarchitektur / Campaign architecture

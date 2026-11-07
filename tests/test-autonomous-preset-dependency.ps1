@@ -177,6 +177,62 @@ try {
     Assert-DependencyTest ($current.ExitCode -eq 0) `
         "Current autonomous preset failed validation: $($current.Output)"
 
+    $fixtureWorker = Join-Path $PSScriptRoot 'fixture-worker.ps1'
+    $runnerData = Get-Content -LiteralPath $runnerConfig -Raw | ConvertFrom-Json -AsHashtable
+    $runnerData.profiles['explicit'] = [ordered]@{
+        agentFamily = 'Fixture'
+        model = $null
+        reasoningEffort = $null
+        executable = 'pwsh'
+        arguments = @(
+            '-NoProfile', '-File', $fixtureWorker,
+            '-CampaignId', '{campaignId}', '-WorkerId', '{workerId}',
+            '-RunId', '{runId}', '-AttemptId', '{attemptId}',
+            '-Worktree', '{worktree}', '-ResultFile', '{resultFile}',
+            '-Mode', 'Completed', '-HandoffsJson', '{handoffsJson}',
+            '-DelayMilliseconds', '20'
+        )
+    }
+    Write-DependencyJson $runnerConfig $runnerData
+    $explicitCampaign = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json -AsHashtable
+    $explicitCampaign.campaignId = [Guid]::NewGuid().ToString()
+    $explicitCampaign.runnerProfile = 'explicit'
+    $explicitCampaign.workers[0].runId = [Guid]::NewGuid().ToString()
+    $explicitCampaign.workers[0].branch = 'parallel/dependency/explicit-without-state'
+    $explicitManifest = Join-Path $tempRoot 'explicit-campaign.json'
+    Write-DependencyJson $explicitManifest $explicitCampaign
+    $explicitState = Join-Path $tempRoot 'explicit-state.json'
+    $explicitOutput = @(& pwsh -NoProfile -File $coordinator -Action Start -Manifest $explicitManifest `
+        -RunnerConfig $runnerConfig -State $explicitState -RuntimeRoot (Join-Path $tempRoot 'explicit-runtime') 2>&1)
+    Assert-DependencyTest (Test-Path -LiteralPath $explicitState -PathType Leaf) `
+        "Explicit-result fixture did not create state: $($explicitOutput -join [Environment]::NewLine)"
+    $explicitStateData = Get-Content -LiteralPath $explicitState -Raw | ConvertFrom-Json
+    Assert-DependencyTest ($explicitStateData.status -eq 'Failed' -and
+        $explicitStateData.workers[0].summary -match 'Autonomous-State-Pfad') `
+        'An explicit successful worker result without Autonomous state was accepted.'
+    $runnerData.profiles['explicit-valid'] = [ordered]@{
+        agentFamily = 'Fixture'
+        model = $null
+        reasoningEffort = $null
+        executable = 'pwsh'
+        arguments = @($runnerData.profiles['explicit'].arguments) + @('-WriteAutonomousState')
+    }
+    Write-DependencyJson $runnerConfig $runnerData
+    $validCampaign = Get-Content -LiteralPath $explicitManifest -Raw | ConvertFrom-Json -AsHashtable
+    $validCampaign.campaignId = [Guid]::NewGuid().ToString()
+    $validCampaign.runnerProfile = 'explicit-valid'
+    $validCampaign.workers[0].runId = [Guid]::NewGuid().ToString()
+    $validCampaign.workers[0].branch = 'parallel/dependency/explicit-valid-state'
+    $validManifest = Join-Path $tempRoot 'valid-state-campaign.json'
+    Write-DependencyJson $validManifest $validCampaign
+    $validState = Join-Path $tempRoot 'valid-state.json'
+    $validOutput = @(& pwsh -NoProfile -File $coordinator -Action Start -Manifest $validManifest `
+        -RunnerConfig $runnerConfig -State $validState -RuntimeRoot (Join-Path $tempRoot 'valid-runtime') 2>&1)
+    $validStateData = Get-Content -LiteralPath $validState -Raw | ConvertFrom-Json
+    Assert-DependencyTest ($validStateData.status -eq 'Completed' -and
+        $validStateData.workers[0].status -eq 'Completed') `
+        "A valid explicit Autonomous state was rejected: $($validStateData.workers[0].summary)"
+
     $campaign = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json -AsHashtable
     $campaign.workers[0].baseRef = $baselineWithoutPreset
     Write-DependencyJson $manifest $campaign
