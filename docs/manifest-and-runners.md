@@ -158,6 +158,10 @@ erteilt keine pauschale Netzwerk- oder Schreibberechtigung.
 Bereich bleibt ausserhalb versionierter Feature-Artefakte. Der normale Checkout
 wird weder gewechselt noch zurueckgesetzt.
 
+Ein GitHub-Merge-Profil mit `gh` muss `--match-head-commit {headSha}` setzen.
+Der Provider weist damit einen Merge ab, wenn sich der PR-Head nach dem
+Preflight geaendert hat.
+
 ## English
 
 ### Manifest
@@ -194,3 +198,6 @@ optional status metadata and never guess another agent's configuration.
 
 `RuntimeRoot` contains worktrees, locks, logs, and process results outside
 tracked feature artifacts. The normal checkout is never switched or reset.
+
+A GitHub merge profile using `gh` must pass `--match-head-commit {headSha}`.
+The provider then rejects a merge if the PR head changed after preflight.

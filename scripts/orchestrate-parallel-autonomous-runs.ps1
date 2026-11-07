@@ -965,6 +965,14 @@ function Test-PARCampaign {
                 $mergeProfile.preflight -is [hashtable]) "Merge-Profil '$mergeProfileName' benoetigt preflight."
             Assert-PARCondition ($mergeProfile.ContainsKey('merge') -and
                 $mergeProfile.merge -is [hashtable]) "Merge-Profil '$mergeProfileName' benoetigt merge."
+            if ([string] $mergeProfile.provider -eq 'GitHub' -and
+                [string] $mergeProfile.merge.executable -eq 'gh') {
+                $mergeArguments = @($mergeProfile.merge.arguments)
+                $matchIndex = [Array]::IndexOf($mergeArguments, '--match-head-commit')
+                Assert-PARCondition ($matchIndex -ge 0 -and $matchIndex + 1 -lt $mergeArguments.Count -and
+                    [string] $mergeArguments[$matchIndex + 1] -ceq '{headSha}') `
+                    "GitHub-Merge-Profil '$mergeProfileName' muss --match-head-commit {headSha} verwenden."
+            }
             Assert-PARCondition ($Campaign.ContainsKey('postMergeActions') -and
                 $Campaign.postMergeActions -is [object[]]) 'Schema 1.1 MergeAndSync benoetigt postMergeActions.'
             Assert-PARCondition ($Profiles.ContainsKey('postMergeProfiles') -and

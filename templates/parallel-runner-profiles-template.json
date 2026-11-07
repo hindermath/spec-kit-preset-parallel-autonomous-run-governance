@@ -45,6 +45,8 @@
           "pr",
           "merge",
           "{prUrl}",
+          "--match-head-commit",
+          "{headSha}",
           "--merge"
         ]
       }
