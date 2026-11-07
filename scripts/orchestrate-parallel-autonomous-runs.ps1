@@ -316,6 +316,82 @@ function Resolve-PARRepository {
     return [IO.Path]::GetFullPath((Join-Path $ManifestDirectory $Value))
 }
 
+function Get-PARRemoteRepositoryIdentity {
+    param([Parameter(Mandatory)][string] $Repository)
+
+    $remote = Invoke-PARGit $Repository @('remote', 'get-url', 'origin') -AllowFailure
+    Assert-PARCondition ($remote.ExitCode -eq 0 -and $remote.Output.Count -eq 1) `
+        "origin-Remote fuer PR-Identitaet fehlt: $Repository"
+    $url = [string] $remote.Output[0]
+    $hostName = ''
+    $repositoryPath = ''
+    if ($url -match '^[A-Za-z][A-Za-z0-9+.-]*://') {
+        $uri = $null
+        Assert-PARCondition ([Uri]::TryCreate($url, [UriKind]::Absolute, [ref] $uri) -and
+            $uri.Scheme -in @('https', 'ssh')) "origin-Remote hat keine sichere PR-Adresse: $url"
+        $hostName = $uri.Host
+        $repositoryPath = $uri.AbsolutePath.Trim('/')
+    } else {
+        Assert-PARCondition ($url -match '^(?:[^@/]+@)?(?<host>[^:/]+):(?<path>[^\s]+)$') `
+            "origin-Remote hat keine sichere PR-Adresse: $url"
+        $hostName = $Matches.host
+        $repositoryPath = $Matches.path
+    }
+    $repositoryPath = $repositoryPath.TrimEnd('/') -replace '\.git$', ''
+    $parts = @($repositoryPath -split '/')
+    Assert-PARCondition ($hostName -match '^[A-Za-z0-9.-]+$' -and $parts.Count -eq 2 -and
+        @($parts | Where-Object { $_ -notmatch '^[A-Za-z0-9_.-]+$' }).Count -eq 0) `
+        "origin-Remote ist kein kanonisches Repository: $url"
+    return "$($hostName.ToLowerInvariant())/$($parts[0].ToLowerInvariant())/$($parts[1].ToLowerInvariant())"
+}
+
+function Get-PARExpectedPrIdentity {
+    param(
+        [Parameter(Mandatory)][hashtable] $Campaign,
+        [Parameter(Mandatory)][hashtable] $Worker,
+        [Parameter(Mandatory)][string] $ManifestDirectory,
+        [Parameter(Mandatory)][string] $Provider
+    )
+
+    $repository = Resolve-PARRepository ([string] $Worker.repository) $ManifestDirectory
+    $headRepository = if ($Provider -eq 'Local Fixture') {
+        [IO.Path]::GetFullPath($repository)
+    } else {
+        Get-PARRemoteRepositoryIdentity $repository
+    }
+    if ($Worker.ContainsKey('prHeadRepository')) {
+        Assert-PARCondition ([string] $Worker.prHeadRepository -eq $headRepository) `
+            "PR-Head-Repository stimmt nicht mit origin ueberein: $($Worker.workerId)"
+    }
+    $baseRepository = if ($Worker.ContainsKey('prBaseRepository')) {
+        [string] $Worker.prBaseRepository
+    } else { $headRepository }
+    Assert-PARCondition (-not [string]::IsNullOrWhiteSpace($baseRepository)) `
+        "PR-Zielrepository fehlt: $($Worker.workerId)"
+    if ($Provider -ne 'Local Fixture') {
+        Assert-PARCondition ($baseRepository -match '^[A-Za-z0-9.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') `
+            "PR-Zielrepository muss host/owner/repo sein: $($Worker.workerId)"
+        $baseRepository = $baseRepository.ToLowerInvariant()
+    }
+    $baseWorkerId = if ($Worker.ContainsKey('baseWorkerId')) { [string] $Worker.baseWorkerId } else { '' }
+    $baseRef = if (-not [string]::IsNullOrWhiteSpace($baseWorkerId)) {
+        [string] (Get-PARCampaignWorker $Campaign $baseWorkerId).branch
+    } elseif ($Worker.ContainsKey('prBaseRef')) {
+        [string] $Worker.prBaseRef
+    } else {
+        $sourceRef = [string] $Worker.baseRef
+        if ($sourceRef -match '^origin/(.+)$') { $Matches[1] }
+        elseif ($sourceRef -match '^refs/heads/(.+)$') { $Matches[1] }
+        elseif ($sourceRef -match '^[0-9a-fA-F]{40}$' -or $sourceRef -match '^refs/') {
+            throw "PR-Zielbranch muss fuer Base-Commit/Tag explizit als prBaseRef deklariert sein: $($Worker.workerId)"
+        } else { $sourceRef }
+    }
+    Assert-PARCondition (-not [string]::IsNullOrWhiteSpace($baseRef)) `
+        "PR-Zielbranch fehlt: $($Worker.workerId)"
+    return @{ headRepository = $headRepository; headRefName = [string] $Worker.branch;
+        baseRepository = $baseRepository; baseRefName = $baseRef }
+}
+
 function Resolve-PARPhysicalPath {
     param([Parameter(Mandatory)][string] $Path)
 
@@ -1015,10 +1091,16 @@ function Test-PARCampaign {
             if ([string] $mergeProfile.provider -eq 'GitHub' -and
                 [string] $mergeProfile.merge.executable -eq 'gh') {
                 $mergeArguments = @($mergeProfile.merge.arguments)
-                $matchIndex = [Array]::IndexOf($mergeArguments, '--match-head-commit')
-                Assert-PARCondition ($matchIndex -ge 0 -and $matchIndex + 1 -lt $mergeArguments.Count -and
-                    [string] $mergeArguments[$matchIndex + 1] -ceq '{headSha}') `
-                    "GitHub-Merge-Profil '$mergeProfileName' muss --match-head-commit {headSha} verwenden."
+                Assert-PARCondition ($mergeArguments.Count -eq 8 -and
+                    [string] $mergeArguments[0] -ceq 'pr' -and
+                    [string] $mergeArguments[1] -ceq 'merge' -and
+                    [string] $mergeArguments[2] -ceq '{prNumber}' -and
+                    [string] $mergeArguments[3] -ceq '--repo' -and
+                    [string] $mergeArguments[4] -ceq '{prBaseRepository}' -and
+                    [string] $mergeArguments[5] -ceq '--match-head-commit' -and
+                    [string] $mergeArguments[6] -ceq '{headSha}' -and
+                    [string] $mergeArguments[7] -in @('--merge', '--squash', '--rebase')) `
+                    "GitHub-Merge-Profil '$mergeProfileName' muss die geprüfte PR-Nummer im Zielrepository und --match-head-commit verwenden."
             }
             Assert-PARCondition ($Campaign.ContainsKey('postMergeActions') -and
                 $Campaign.postMergeActions -is [object[]]) 'Schema 1.1 MergeAndSync benoetigt postMergeActions.'
@@ -1841,6 +1923,7 @@ function Invoke-PARProviderPreflight {
     $resultPath = Join-Path $preflightRoot "$($Worker.workerId).json"
     Remove-Item -LiteralPath $resultPath -Force -ErrorAction SilentlyContinue
     $repository = Resolve-PARRepository ([string] $Worker.repository) $ManifestDirectory
+    $expectedIdentity = Get-PARExpectedPrIdentity $Campaign $Worker $ManifestDirectory ([string] $MergeProfile.provider)
     $values = @{
         campaignId = [string] $Campaign.campaignId
         workerId = [string] $Worker.workerId
@@ -1860,7 +1943,8 @@ function Invoke-PARProviderPreflight {
     foreach ($requiredField in @(
         'prUrl', 'state', 'isDraft', 'headSha', 'mergeable', 'reviewDecision',
         'unresolvedCurrentThreads', 'checkPolicySatisfied', 'technicalFailures',
-        'baseRefName', 'mergeCommitSha'
+        'headRepository', 'headRefName', 'baseRepository', 'baseRefName',
+        'prNumber', 'mergeCommitSha'
     )) {
         Assert-PARCondition $preflight.ContainsKey($requiredField) `
             "Provider-Preflight '$($Worker.workerId)' enthaelt '$requiredField' nicht."
@@ -1869,6 +1953,25 @@ function Invoke-PARProviderPreflight {
         "Provider-Preflight verweist auf eine andere PR fuer Worker '$($Worker.workerId)'."
     Assert-PARCondition ([string] $preflight.headSha -eq [string] $WorkerState.headSha) `
         "PR-Head-Drift bei Worker '$($Worker.workerId)'."
+    foreach ($field in @('headRefName', 'baseRefName')) {
+        Assert-PARCondition ([string] $preflight[$field] -ceq [string] $expectedIdentity[$field]) `
+            "Provider-PR-Identitaet '$field' passt nicht zur Kampagne fuer Worker '$($Worker.workerId)'."
+    }
+    foreach ($field in @('headRepository', 'baseRepository')) {
+        Assert-PARCondition ([string] $preflight[$field] -eq [string] $expectedIdentity[$field]) `
+            "Provider-PR-Identitaet '$field' passt nicht zur Kampagne fuer Worker '$($Worker.workerId)'."
+    }
+    $prNumber = 0
+    Assert-PARCondition ([int]::TryParse([string] $preflight.prNumber, [ref] $prNumber) -and
+        $prNumber -gt 0) "Provider-PR hat keine gueltige Nummer fuer Worker '$($Worker.workerId)'."
+    if ([string] $MergeProfile.provider -eq 'GitHub') {
+        $canonicalUrl = "https://$($expectedIdentity.baseRepository)/pull/$prNumber"
+        $prUri = $null
+        Assert-PARCondition ([Uri]::TryCreate([string] $preflight.prUrl, [UriKind]::Absolute, [ref] $prUri) -and
+            $prUri.Scheme -eq 'https' -and $prUri.Query -eq '' -and $prUri.Fragment -eq '' -and
+            $prUri.AbsoluteUri.TrimEnd('/') -eq $canonicalUrl) `
+            "Provider-PR-URL liegt nicht im deklarierten Zielrepository fuer Worker '$($Worker.workerId)'."
+    }
     Assert-PARCondition (@('Open', 'Merged', 'Closed') -contains [string] $preflight.state) `
         "Provider-Preflight meldet einen ungueltigen PR-Zustand fuer Worker '$($Worker.workerId)'."
 
@@ -1912,6 +2015,8 @@ function Confirm-PARWorkerProviderState {
         Sync-PARStopRequest $CampaignState $StatePath
         $workerState.providerState = [string] $preflight.state
         $workerState.baseRefName = [string] $preflight.baseRefName
+        $workerState.prNumber = [int] $preflight.prNumber
+        $workerState.prBaseRepository = [string] $preflight.baseRepository
         $workerState.lastPreflightAt = [DateTime]::UtcNow.ToString('o')
         if ([string] $preflight.state -eq 'Merged') {
             $workerState.status = 'Merged'
@@ -2224,6 +2329,8 @@ function Invoke-PARConsolidateCore {
             campaignId = [string] $Campaign.campaignId
             workerId = $id
             prUrl = [string] $workerState.prUrl
+            prNumber = [string] $workerState.prNumber
+            prBaseRepository = [string] $workerState.prBaseRepository
             headSha = [string] $workerState.headSha
             repository = $repository
             branch = [string] $worker.branch

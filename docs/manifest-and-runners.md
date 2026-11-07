@@ -164,9 +164,13 @@ wird weder gewechselt noch zurueckgesetzt.
 Runner-Logs werden direkt in Dateien gestreamt. Je Stream gelten 16 MiB und
 vier Stunden Laufzeit; Profilbefehle haben 4 MiB je Stream und fünf Minuten.
 
-Ein GitHub-Merge-Profil mit `gh` muss `--match-head-commit {headSha}` setzen.
-Der Provider weist damit einen Merge ab, wenn sich der PR-Head nach dem
-Preflight geaendert hat.
+Der Provider-Preflight muss die kanonische Head- und Zielrepository-Identitaet,
+beide Branches und die PR-Nummer liefern. Der Head muss zum `origin` des
+Worker-Repositories und zum deklarierten Worker-Branch passen. Fuer ein
+anderes Zielrepository setzt der Worker `prBaseRepository`; fuer abweichende
+direkte Ziel-Branches `prBaseRef`. Ein GitHub-Merge-Profil mit `gh` verwendet
+die gepruefte PR-Nummer mit `--repo {prBaseRepository}` und
+`--match-head-commit {headSha}`.
 
 ## English
 
@@ -207,5 +211,9 @@ tracked feature artifacts. The normal checkout is never switched or reset.
 Runner logs stream directly to files, capped at 16 MiB per stream and four
 hours. Profile commands are capped at 4 MiB per stream and five minutes.
 
-A GitHub merge profile using `gh` must pass `--match-head-commit {headSha}`.
-The provider then rejects a merge if the PR head changed after preflight.
+Provider preflight must return canonical head and target repository identities,
+both branches, and the PR number. The head must match the worker repository's
+`origin` and declared branch. Workers set `prBaseRepository` for a different
+target repository and `prBaseRef` for a different direct target branch. A
+GitHub merge profile using `gh` uses the verified PR number with
+`--repo {prBaseRepository}` and `--match-head-commit {headSha}`.

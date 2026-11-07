@@ -85,6 +85,7 @@ function New-TestCase {
         [Parameter(Mandatory)][string] $Name,
         [int] $WorkerCount = 1,
         [switch] $SharedRepository,
+        [switch] $Stacked,
         [switch] $Alternative,
         [string[]] $RunnerProfiles = @(),
         [int] $SyncFailures = 0
@@ -106,6 +107,17 @@ function New-TestCase {
         }
         $runnerProfile = if ($index -lt $RunnerProfiles.Count) { $RunnerProfiles[$index] } else { $null }
         $workers.Add((New-TestWorker "worker-$('{0:D2}' -f $index)" $repository $runnerProfile))
+    }
+    if ($Stacked) {
+        Assert-Test $SharedRepository 'Stacked fixture requires one shared repository'
+        for ($index = 1; $index -lt $workers.Count; $index++) {
+            $workers[$index].baseWorkerId = [string] $workers[$index - 1].workerId
+            $workers[$index].dependsOn = @([string] $workers[$index - 1].workerId)
+            $workers[$index - 1].handoffs = @([ordered]@{
+                consumerWorkerId = [string] $workers[$index].workerId
+                path = "handoff-$($workers[$index - 1].workerId)-$($workers[$index].workerId).json"
+            })
+        }
     }
 
     $providerStatePath = Join-Path $caseRoot 'provider-state.json'
@@ -267,12 +279,18 @@ function New-TestCase {
             state = 'Open'
             isDraft = $false
             headSha = [string] $workerState.headSha
+            headRepository = [string] $worker.repository
+            headRefName = [string] $worker.branch
+            baseRepository = [string] $worker.repository
+            prNumber = [int] ([regex]::Match([string] $worker.workerId, '\d+$').Value) + 1
             mergeable = $true
             reviewDecision = $null
             unresolvedCurrentThreads = 0
             checkPolicySatisfied = $true
             technicalFailures = @()
-            baseRefName = 'main'
+            baseRefName = if ($worker.baseWorkerId) {
+                [string] (@($campaign.workers | Where-Object workerId -eq $worker.baseWorkerId)[0]).branch
+            } else { 'main' }
             mergeCommitSha = $null
             mergeFailuresRemaining = 0
             mergeDelayMilliseconds = 0
@@ -336,6 +354,29 @@ function Update-ProviderWorker {
 }
 
 try {
+    $coordinatorAst = [System.Management.Automation.Language.Parser]::ParseFile(
+        $coordinator, [ref] $null, [ref] $null)
+    foreach ($name in @('Assert-PARCondition', 'Invoke-PARGit', 'Resolve-PARRepository',
+            'Get-PARRemoteRepositoryIdentity', 'Get-PARExpectedPrIdentity')) {
+        $definition = @($coordinatorAst.FindAll({ param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst]
+        }, $true) | Where-Object Name -eq $name)[0]
+        . ([scriptblock]::Create($definition.Extent.Text))
+    }
+    $remoteRepo = Initialize-TestRepository 'remote-identity'
+    [void](Invoke-TestGit $remoteRepo @('remote', 'add', 'origin', 'https://GitHub.com/Owner/Repo.git'))
+    Assert-Test ((Get-PARRemoteRepositoryIdentity $remoteRepo) -ceq 'github.com/owner/repo') `
+        'HTTPS origin was not canonicalized to its repository identity'
+    $identityWorker = [ordered]@{ workerId = 'identity'; repository = $remoteRepo;
+        branch = 'parallel/identity'; baseRef = 'origin/main'; baseWorkerId = $null }
+    $identity = Get-PARExpectedPrIdentity @{ workers = @($identityWorker) } $identityWorker $tempRoot 'GitHub'
+    Assert-Test ($identity.baseRefName -ceq 'main' -and
+        $identity.headRepository -ceq 'github.com/owner/repo') `
+        'origin/main was not bound to GitHub base branch main'
+    [void](Invoke-TestGit $remoteRepo @('remote', 'set-url', 'origin', 'git@GitHub.com:Owner/Repo.git'))
+    Assert-Test ((Get-PARRemoteRepositoryIdentity $remoteRepo) -ceq 'github.com/owner/repo') `
+        'SSH origin was not canonicalized to its repository identity'
+
     $mixed = New-TestCase 'mixed-runner-fallback' -WorkerCount 3 `
         -RunnerProfiles @('fixture-codex', 'fixture-claude')
     Invoke-TestConsolidate $mixed
@@ -374,6 +415,24 @@ try {
     Assert-Test ($LASTEXITCODE -ne 0) 'Consolidation without merge hid NeedsRevalidation'
     Assert-Test ((Read-TestState $headDrift.State).status -eq 'NeedsRevalidation') `
         'Consolidation without merge overwrote NeedsRevalidation'
+
+    $foreignPr = New-TestCase 'foreign-pr-identity'
+    Update-ProviderWorker $foreignPr 'worker-00' {
+        param($worker)
+        $worker.headRepository = '/foreign/repository'
+    }
+    Invoke-TestConsolidate $foreignPr -ExpectFailure
+    Assert-Test ((Read-TestState $foreignPr.State).status -eq 'NeedsRevalidation') `
+        'Foreign PR head repository did not require revalidation'
+
+    $wrongBase = New-TestCase 'wrong-pr-base'
+    Update-ProviderWorker $wrongBase 'worker-00' {
+        param($worker)
+        $worker.baseRefName = 'unexpected-base'
+    }
+    Invoke-TestConsolidate $wrongBase -ExpectFailure
+    Assert-Test ((Read-TestState $wrongBase.State).status -eq 'NeedsRevalidation') `
+        'PR targeting another base branch did not require revalidation'
 
     $openReview = New-TestCase 'open-review'
     Update-ProviderWorker $openReview 'worker-00' { param($worker) $worker.unresolvedCurrentThreads = 1 }
@@ -495,15 +554,7 @@ try {
     Assert-Test ((Read-TestState $concurrentResume.State).status -eq 'Completed') `
         'Concurrent consolidation resume lock changed the completed state'
 
-    $stacked = New-TestCase 'stacked-base-revalidation' -WorkerCount 3 -SharedRepository
-    Update-ProviderWorker $stacked 'worker-01' {
-        param($worker)
-        $worker.baseRefName = 'parallel/v2/stacked/worker-00'
-    }
-    Update-ProviderWorker $stacked 'worker-02' {
-        param($worker)
-        $worker.baseRefName = 'parallel/v2/stacked/worker-01'
-    }
+    $stacked = New-TestCase 'stacked-base-revalidation' -WorkerCount 3 -SharedRepository -Stacked
     Invoke-TestConsolidate $stacked
     $stackedProviderState = Read-TestState $stacked.ProviderState
     Assert-Test ([int] $stackedProviderState.workers['worker-02'].preflightCount -ge 4) `

@@ -44,7 +44,9 @@
         "arguments": [
           "pr",
           "merge",
-          "{prUrl}",
+          "{prNumber}",
+          "--repo",
+          "{prBaseRepository}",
           "--match-head-commit",
           "{headSha}",
           "--merge"
