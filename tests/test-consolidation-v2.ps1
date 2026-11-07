@@ -84,6 +84,7 @@ function New-TestCase {
         [Parameter(Mandatory)][string] $Name,
         [int] $WorkerCount = 1,
         [switch] $SharedRepository,
+        [switch] $Alternative,
         [string[]] $RunnerProfiles = @(),
         [int] $SyncFailures = 0
     )
@@ -117,7 +118,7 @@ function New-TestCase {
         schemaVersion = '1.1'
         campaignId = [guid]::NewGuid().ToString()
         name = $Name
-        topology = 'ReplicatedTargets'
+        topology = if ($Alternative) { 'AlternativeSolutions' } else { 'ReplicatedTargets' }
         deliveryMode = 'MergeAndSync'
         maxConcurrency = 3
         runnerProfile = 'fixture-default'
@@ -127,7 +128,7 @@ function New-TestCase {
         consolidation = [ordered]@{
             allReadyBarrier = $true
             mergeOrder = @($workers | ForEach-Object workerId)
-            humanSelectionRequired = $false
+            humanSelectionRequired = [bool]$Alternative
             mergeProfile = 'fixture-provider'
         }
         postMergeActions = @(
@@ -226,16 +227,27 @@ function New-TestCase {
             }
         }
     }
+    if ($Alternative) {
+        $campaign.postMergeActions += [ordered]@{
+            actionId = 'validate-unselected'; workerId = 'worker-01'; phase = 'Validate'; profile = 'fixture-post-merge'
+        }
+    }
     Write-TestJson $manifestPath $campaign
     Write-TestJson $runnerPath $runnerConfig
     Write-TestJson $providerStatePath ([ordered]@{ schemaVersion = '1.1'; workers = [ordered]@{} })
-    Write-TestJson $postMergeStatePath ([ordered]@{
+    $postMergeFixture = [ordered]@{
         actions = [ordered]@{
             'sync-main' = [ordered]@{ attemptCount = 0; failuresRemaining = $SyncFailures; succeeded = $false }
             closeout = [ordered]@{ attemptCount = 0; failuresRemaining = 0; succeeded = $false }
             'validate-main' = [ordered]@{ attemptCount = 0; failuresRemaining = 0; succeeded = $false }
         }
-    })
+    }
+    if ($Alternative) {
+        $postMergeFixture.actions['validate-unselected'] = [ordered]@{
+            attemptCount = 0; failuresRemaining = 0; succeeded = $false
+        }
+    }
+    Write-TestJson $postMergeStatePath $postMergeFixture
 
     & pwsh -NoProfile -File $coordinator -Action Validate -Manifest $manifestPath -RunnerConfig $runnerPath | Out-Null
     Assert-Test ($LASTEXITCODE -eq 0) "$Name validation failed"
@@ -243,7 +255,8 @@ function New-TestCase {
         -State $statePath -RuntimeRoot $runtimePath | Out-Null
     Assert-Test ($LASTEXITCODE -eq 0) "$Name start failed"
     $campaignState = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json -AsHashtable
-    Assert-Test ([string] $campaignState.status -eq 'ReadyForConsolidation') "$Name did not reach ReadyForConsolidation"
+    $expectedStatus = if ($Alternative) { 'AwaitingSelection' } else { 'ReadyForConsolidation' }
+    Assert-Test ([string] $campaignState.status -eq $expectedStatus) "$Name did not reach $expectedStatus"
     $providerState = Get-Content -LiteralPath $providerStatePath -Raw | ConvertFrom-Json -AsHashtable
     foreach ($workerState in $campaignState.workers) {
         $worker = @($campaign.workers | Where-Object workerId -eq $workerState.workerId)[0]
@@ -282,10 +295,11 @@ function New-TestCase {
 }
 
 function Invoke-TestConsolidate {
-    param([Parameter(Mandatory)][hashtable] $Case, [switch] $ExpectFailure)
+    param([Parameter(Mandatory)][hashtable] $Case, [switch] $ExpectFailure, [string] $SelectedWorker = '')
 
+    $selectionArgs = if ($SelectedWorker) { @('-SelectedWorker', $SelectedWorker) } else { @() }
     & pwsh -NoProfile -File $coordinator -Action Consolidate -Manifest $Case.Manifest `
-        -RunnerConfig $Case.Runner -State $Case.State -RuntimeRoot $Case.Runtime -Merge 2>$null | Out-Null
+        -RunnerConfig $Case.Runner -State $Case.State -RuntimeRoot $Case.Runtime -Merge @selectionArgs 2>$null | Out-Null
     if ($ExpectFailure) {
         Assert-Test ($LASTEXITCODE -ne 0) "$($Case.Name) unexpectedly consolidated"
     } else {
@@ -297,7 +311,7 @@ function Invoke-TestResume {
     param([Parameter(Mandatory)][hashtable] $Case)
 
     & pwsh -NoProfile -File $coordinator -Action Resume -Manifest $Case.Manifest `
-        -RunnerConfig $Case.Runner -State $Case.State -RuntimeRoot $Case.Runtime 2>$null | Out-Null
+        -RunnerConfig $Case.Runner -State $Case.State -RuntimeRoot $Case.Runtime -Merge 2>$null | Out-Null
     Assert-Test ($LASTEXITCODE -eq 0) "$($Case.Name) resume failed"
 }
 
@@ -338,6 +352,16 @@ try {
     Assert-Test (-not $statusJson.Contains('SENSITIVE-RUNNER-DATA-MUST-NOT-LEAK')) 'JSON status leaked runner configuration'
     Assert-Test ($statusText.Contains('Agent-Standard/nicht deklariert')) 'Text status omitted undeclared model marker'
     Assert-Test (-not $statusText.Contains('SENSITIVE-RUNNER-DATA-MUST-NOT-LEAK')) 'Text status leaked runner configuration'
+
+    $alternative = New-TestCase 'selected-alternative-actions' -WorkerCount 2 -Alternative
+    Invoke-TestConsolidate $alternative -SelectedWorker 'worker-00'
+    $alternativeState = Read-TestState $alternative.State
+    $alternativeActions = Read-TestState $alternative.PostMergeState
+    Assert-Test ($alternativeState.status -eq 'Completed') 'Selected alternative did not complete'
+    Assert-Test ((@($alternativeState.postMergeActions | Where-Object actionId -eq 'validate-unselected')[0]).status -eq 'Skipped') `
+        'Unselected alternative action was not skipped'
+    Assert-Test ([int] $alternativeActions.actions['validate-unselected'].attemptCount -eq 0) `
+        'Unselected alternative post-merge action executed'
 
     $headDrift = New-TestCase 'head-drift'
     Update-ProviderWorker $headDrift 'worker-00' { param($worker) $worker.headSha = '0000000000000000000000000000000000000000' }
@@ -397,6 +421,14 @@ try {
     Assert-Test (@($rejectedActionFixture.actions.Values | Where-Object attemptCount -ne 0).Count -eq 0) `
         'Post-merge state drift started an undeclared action'
 
+    $forgedSelection = New-TestCase 'forged-selection'
+    $forgedSelectionState = Read-TestState $forgedSelection.State
+    $forgedSelectionState.selectedWorkerId = 'worker-00'
+    Write-TestJson $forgedSelection.State $forgedSelectionState
+    Invoke-TestConsolidate $forgedSelection -ExpectFailure
+    Assert-Test ((Read-TestState $forgedSelection.ProviderState).workers['worker-00'].state -eq 'Open') `
+        'Non-alternative selection reached provider merge'
+
     $partial = New-TestCase 'partial-merge-resume' -WorkerCount 2
     Update-ProviderWorker $partial 'worker-01' { param($worker) $worker.mergeFailuresRemaining = 1 }
     Invoke-TestConsolidate $partial -ExpectFailure
@@ -442,7 +474,8 @@ try {
         '-Manifest', $concurrentResume.Manifest,
         '-RunnerConfig', $concurrentResume.Runner,
         '-State', $concurrentResume.State,
-        '-RuntimeRoot', $concurrentResume.Runtime
+        '-RuntimeRoot', $concurrentResume.Runtime,
+        '-Merge'
     ) -PassThru
     $resumeLock = Join-Path $concurrentResume.Runtime 'campaign.lock'
     $deadline = [DateTime]::UtcNow.AddSeconds(10)
@@ -453,7 +486,7 @@ try {
     Assert-Test $resumeLockObserved 'Consolidation resume fixture did not acquire the campaign lock'
     & pwsh -NoProfile -File $coordinator -Action Resume -Manifest $concurrentResume.Manifest `
         -RunnerConfig $concurrentResume.Runner -State $concurrentResume.State `
-        -RuntimeRoot $concurrentResume.Runtime 2>$null | Out-Null
+        -RuntimeRoot $concurrentResume.Runtime -Merge 2>$null | Out-Null
     Assert-Test ($LASTEXITCODE -ne 0) 'Concurrent consolidation resume bypassed the campaign lock'
     $firstResume.WaitForExit()
     Assert-Test ($firstResume.ExitCode -eq 0) 'First locked consolidation resume failed'

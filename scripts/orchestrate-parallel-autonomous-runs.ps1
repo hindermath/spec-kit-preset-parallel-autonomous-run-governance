@@ -936,6 +936,11 @@ function Initialize-PARStateShape {
         [Parameter(Mandatory)][hashtable] $Profiles
     )
 
+    if ($Campaign.topology -ne 'AlternativeSolutions') {
+        Assert-PARCondition ([string]::IsNullOrWhiteSpace([string] $CampaignState.selectedWorkerId)) `
+            'selectedWorkerId ist nur fuer AlternativeSolutions zulaessig.'
+    }
+
     $CampaignState.schemaVersion = '1.1'
     if (-not $CampaignState.ContainsKey('sourceSchemaVersion')) {
         $CampaignState.sourceSchemaVersion = '1.0'
@@ -1625,9 +1630,12 @@ function Set-PARCompletionFlags {
     }
     $CampaignState.completion.mergeComplete =
         @($mergeWorkers | Where-Object status -ne 'Merged').Count -eq 0
-    $syncActions = @($CampaignState.postMergeActions | Where-Object phase -eq 'Synchronize')
-    $postActions = @($CampaignState.postMergeActions | Where-Object phase -eq 'PostMerge')
-    $validationActions = @($CampaignState.postMergeActions | Where-Object phase -eq 'Validate')
+    $eligibleActions = if (-not [string]::IsNullOrWhiteSpace([string] $CampaignState.selectedWorkerId)) {
+        @($CampaignState.postMergeActions | Where-Object workerId -eq $CampaignState.selectedWorkerId)
+    } else { @($CampaignState.postMergeActions) }
+    $syncActions = @($eligibleActions | Where-Object phase -eq 'Synchronize')
+    $postActions = @($eligibleActions | Where-Object phase -eq 'PostMerge')
+    $validationActions = @($eligibleActions | Where-Object phase -eq 'Validate')
     $CampaignState.completion.synchronizationComplete =
         $syncActions.Count -gt 0 -and @($syncActions | Where-Object status -ne 'Succeeded').Count -eq 0
     $CampaignState.completion.postMergeComplete =
@@ -1692,6 +1700,12 @@ function Invoke-PARPostMergeActions {
     $CampaignState.attempts.postMerge = [int] $CampaignState.attempts.postMerge + 1
     foreach ($phase in @('Synchronize', 'PostMerge', 'Validate')) {
         foreach ($actionState in @($CampaignState.postMergeActions | Where-Object phase -eq $phase)) {
+            if ($Campaign.topology -eq 'AlternativeSolutions' -and
+                [string] $actionState.workerId -ne [string] $CampaignState.selectedWorkerId) {
+                $actionState.status = 'Skipped'
+                $actionState.summary = 'Unselected alternative was not merged.'
+                continue
+            }
             if ($actionState.status -eq 'Succeeded') {
                 continue
             }
@@ -1701,6 +1715,8 @@ function Invoke-PARPostMergeActions {
             $action = @($Campaign.postMergeActions | Where-Object actionId -eq $actionState.actionId)[0]
             $worker = Get-PARCampaignWorker $Campaign ([string] $action.workerId)
             $workerState = Get-PARWorkerState $CampaignState ([string] $action.workerId)
+            Assert-PARCondition ([string] $workerState.status -eq 'Merged') `
+                "Post-Merge-Aktion '$($action.actionId)' erfordert einen gemergten Worker."
             $postMergeProfile = $Profiles.postMergeProfiles[[string] $action.profile]
             $repository = Resolve-PARRepository ([string] $worker.repository) $ManifestDirectory
             $values = @{
@@ -1784,6 +1800,11 @@ function Invoke-PARConsolidateCore {
     }
     $eligibleIds = @($Campaign.consolidation.mergeOrder)
     if ($Campaign.topology -eq 'AlternativeSolutions') {
+        if (-not [string]::IsNullOrWhiteSpace([string] $campaignState.selectedWorkerId) -and
+            -not [string]::IsNullOrWhiteSpace($Selection) -and
+            $Selection -ne [string] $campaignState.selectedWorkerId) {
+            throw 'SelectedWorker darf nach der Auswahl nicht gewechselt werden.'
+        }
         if ([string]::IsNullOrWhiteSpace($Selection) -and
             -not [string]::IsNullOrWhiteSpace([string] $campaignState.selectedWorkerId)) {
             $Selection = [string] $campaignState.selectedWorkerId
@@ -1792,6 +1813,14 @@ function Invoke-PARConsolidateCore {
         Assert-PARCondition ($eligibleIds -contains $Selection) "SelectedWorker '$Selection' ist unbekannt."
         $eligibleIds = @($Selection)
         $campaignState.selectedWorkerId = $Selection
+        if ($DoMerge) {
+            foreach ($requiredPhase in @('Synchronize', 'Validate')) {
+                Assert-PARCondition (@($Campaign.postMergeActions | Where-Object {
+                    $_.workerId -eq $Selection -and $_.phase -eq $requiredPhase
+                }).Count -gt 0) `
+                    "SelectedWorker '$Selection' benoetigt eine $requiredPhase-Aktion."
+            }
+        }
     }
 
     $eligibleStatuses = if ($DoMerge) {
