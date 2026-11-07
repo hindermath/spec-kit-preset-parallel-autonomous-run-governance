@@ -356,8 +356,12 @@ function Update-ProviderWorker {
 try {
     $coordinatorAst = [System.Management.Automation.Language.Parser]::ParseFile(
         $coordinator, [ref] $null, [ref] $null)
-    foreach ($name in @('Assert-PARCondition', 'Invoke-PARGit', 'Resolve-PARRepository',
-            'Get-PARRemoteRepositoryIdentity', 'Get-PARExpectedPrIdentity')) {
+    foreach ($name in @('Assert-PARCondition', 'Assert-PARSchemaVersion', 'Read-PARJson',
+            'Invoke-PARGit', 'Get-PARSha256', 'Test-PARUuid', 'Resolve-PARPhysicalPath',
+            'Resolve-PARRepository', 'Get-PARRemoteRepositoryIdentity',
+            'Get-PARExpectedPrIdentity', 'ConvertTo-PARArgumentList', 'Invoke-PARProcessAsync',
+            'Invoke-PARProfileCommand', 'Invoke-PARProviderPreflight',
+            'Confirm-PARAutonomousState', 'Confirm-PARPublicationWorkerState')) {
         $definition = @($coordinatorAst.FindAll({ param($node)
             $node -is [System.Management.Automation.Language.FunctionDefinitionAst]
         }, $true) | Where-Object Name -eq $name)[0]
@@ -379,6 +383,38 @@ try {
 
     $mixed = New-TestCase 'mixed-runner-fallback' -WorkerCount 3 `
         -RunnerProfiles @('fixture-codex', 'fixture-claude')
+    $script:SupportedSchemaVersions = @('1.0', '1.1', '1.2')
+    $publicationProfile = [ordered]@{
+        provider = 'Local Fixture'
+        preflight = (Read-TestState $mixed.Runner).mergeProfiles['fixture-provider'].preflight
+    }
+    $publicationWorker = $mixed.Campaign.workers[0]
+    $publicationWorkerState = (Read-TestState $mixed.State).workers[0]
+    $publication = Invoke-PARProviderPreflight $mixed.Campaign $publicationProfile `
+        $publicationWorker $publicationWorkerState (Split-Path -Parent $mixed.Manifest) $mixed.Runtime `
+        -PublicationOnly
+    Assert-Test ($publication.state -eq 'Open') 'Read-only publication preflight rejected a valid PR'
+    $publishCampaign = Read-TestState $mixed.Manifest
+    $publishCampaign.deliveryMode = 'PublishPR'
+    $publishCampaign.publicationProfile = 'fixture-publication'
+    $publishProfiles = Read-TestState $mixed.Runner
+    $publishProfiles.publicationProfiles = @{ 'fixture-publication' = $publicationProfile }
+    Confirm-PARPublicationWorkerState $publishCampaign $publishProfiles $publicationWorker `
+        $publicationWorkerState (Split-Path -Parent $mixed.Manifest) $mixed.Runtime
+    Assert-Test ($publicationWorkerState.status -eq 'ReadyForMerge' -and
+        $publicationWorkerState.providerState -eq 'Open') `
+        'Published worker result was not bound to an open provider PR'
+    Update-ProviderWorker $mixed 'worker-00' { param($worker) $worker.headRepository = '/foreign/repository' }
+    $foreignPublicationRejected = $false
+    try {
+        Confirm-PARPublicationWorkerState $publishCampaign $publishProfiles $publicationWorker `
+            $publicationWorkerState (Split-Path -Parent $mixed.Manifest) $mixed.Runtime
+    } catch { $foreignPublicationRejected = $true }
+    Assert-Test $foreignPublicationRejected 'Read-only publication preflight accepted a foreign PR'
+    Update-ProviderWorker $mixed 'worker-00' {
+        param($worker)
+        $worker.headRepository = [string] $publicationWorker.repository
+    }
     Invoke-TestConsolidate $mixed
     $mixedState = Read-TestState $mixed.State
     Assert-Test ($mixedState.status -eq 'Completed') 'Mixed runner campaign did not complete'

@@ -107,6 +107,7 @@ Das Manifest ist der gepruefte Kampagnenvertrag. Wichtige Felder:
 | `campaignId` | Stabile UUID |
 | `topology` | Eine der vier Topologien |
 | `deliveryMode` | `LocalImplementation`, `PublishPR` oder `MergeAndSync` |
+| `publicationProfile` | Bei `PublishPR` ein rein lesendes Provider-Profil |
 | `maxConcurrency` | Ganzzahl `1..3` |
 | `runnerProfile` | Kampagnen-Fallback |
 | `routingRole` | Stabile Standardrolle fuer Worker |
@@ -118,6 +119,15 @@ Das Manifest ist der gepruefte Kampagnenvertrag. Wichtige Felder:
 
 Der gespeicherte Manifest-SHA-256 bindet Resume und Status an genau den
 akzeptierten Vertrag. Drift wird nicht still uebernommen.
+`PublishPR` verlangt ein explizites Worker-Ergebnis mit PR-URL und einen
+lesenden Provider-Preflight fuer die offene PR, den exakten Head und die
+kanonische Repository-/Branch-Identitaet. Ein reiner Runner-Exit reicht nicht.
+Vor dem Kampagnenabschluss wird jede PR erneut geprüft. Ein vorübergehender
+Providerfehler führt zu `NeedsRevalidation`; `Resume` prüft die vorhandene
+Ergebnisevidence erneut, ohne den Worker noch einmal auszuführen.
+Pausierte PublishPR-Läufe aus älteren Versionen ohne eigenen Ergebnisordner und
+Ergebnis-Hash können nicht sicher übernommen werden; dafür ist ein neuer
+Kampagnenlauf mit der aktuellen Vorlage erforderlich.
 
 ### Runner-Konfiguration
 
@@ -182,6 +192,15 @@ the required Preset 7 gate, workers, consolidation, and post-merge actions.
 
 The persisted manifest SHA-256 binds status and resume to the accepted
 contract. Drift is never adopted silently.
+`PublishPR` requires an explicit worker result with a PR URL and a read-only
+provider preflight for the open PR, exact head, and canonical repository and
+branch identities. Runner exit alone does not complete publication.
+Every PR is checked again before campaign completion. A temporary provider
+failure yields `NeedsRevalidation`; `Resume` rechecks the existing result
+evidence without rerunning the worker.
+Paused PublishPR runs from older versions without per-worker result directories
+and result hashes cannot be safely adopted; start a new campaign with the
+current template.
 
 ### Runner configuration
 

@@ -176,6 +176,38 @@ try {
     $current = Invoke-DependencyValidation $manifest $runnerConfig
     Assert-DependencyTest ($current.ExitCode -eq 0) `
         "Current autonomous preset failed validation: $($current.Output)"
+    $publishCampaign = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json -AsHashtable
+    $publishCampaign.campaignId = [Guid]::NewGuid().ToString()
+    $publishCampaign.deliveryMode = 'PublishPR'
+    $publishCampaign.workers[0].branch = 'parallel/dependency/publish-pr'
+    $publishManifest = Join-Path $tempRoot 'publish-campaign.json'
+    Write-DependencyJson $publishManifest $publishCampaign
+    $missingPublication = Invoke-DependencyValidation $publishManifest $runnerConfig
+    Assert-DependencyTest ($missingPublication.ExitCode -ne 0 -and
+        $missingPublication.Output -match 'publicationProfile') `
+        'PublishPR accepted a campaign without a read-only provider profile.'
+    $publishCampaign.publicationProfile = 'fixture-publication'
+    Write-DependencyJson $publishManifest $publishCampaign
+    $publishProfiles = Get-Content -LiteralPath $runnerConfig -Raw | ConvertFrom-Json -AsHashtable
+    $publishProfiles.publicationProfiles = [ordered]@{
+        'fixture-publication' = [ordered]@{
+            provider = 'Local Fixture'
+            preflight = [ordered]@{ executable = 'pwsh'; arguments = @('-NoProfile', '-Command', 'exit 0') }
+        }
+    }
+    $publishRunnerConfig = Join-Path $tempRoot 'publish-runners.json'
+    Write-DependencyJson $publishRunnerConfig $publishProfiles
+    $validPublication = Invoke-DependencyValidation $publishManifest $publishRunnerConfig
+    Assert-DependencyTest ($validPublication.ExitCode -eq 0) `
+        "PublishPR read-only profile failed validation: $($validPublication.Output)"
+    $publishState = Join-Path $tempRoot 'publish-state.json'
+    & pwsh -NoProfile -File $coordinator -Action Start -Manifest $publishManifest `
+        -RunnerConfig $publishRunnerConfig -State $publishState `
+        -RuntimeRoot (Join-Path $tempRoot 'publish-runtime') | Out-Null
+    $publishStateData = Get-Content -LiteralPath $publishState -Raw | ConvertFrom-Json
+    Assert-DependencyTest ($publishStateData.status -eq 'Failed' -and
+        $publishStateData.workers[0].summary -match 'explizites PR-Ergebnis') `
+        'PublishPR completed from a zero-exit runner without a PR result.'
     $withoutGate = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json -AsHashtable
     $withoutGate.requireAutonomousPreset = $false
     $withoutGateManifest = Join-Path $tempRoot 'without-gate-campaign.json'
