@@ -291,6 +291,42 @@ function Resolve-PARRepository {
     return [IO.Path]::GetFullPath((Join-Path $ManifestDirectory $Value))
 }
 
+function Resolve-PARPhysicalPath {
+    param([Parameter(Mandatory)][string] $Path)
+
+    $full = [IO.Path]::GetFullPath($Path)
+    $root = [IO.Path]::GetPathRoot($full)
+    $current = $root
+    foreach ($segment in $full.Substring($root.Length).Split([char[]]@('/', '\'), [StringSplitOptions]::RemoveEmptyEntries)) {
+        $current = [IO.Path]::Combine($current, $segment)
+        $entry = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+        if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            $resolved = $entry.ResolveLinkTarget($true)
+            Assert-PARCondition ($null -ne $resolved) "Symlink kann nicht aufgeloest werden: $current"
+            $current = $resolved.FullName
+        }
+    }
+    return [IO.Path]::GetFullPath($current)
+}
+
+function Resolve-PARFeatureInput {
+    param(
+        [Parameter(Mandatory)][string] $Repository,
+        [Parameter(Mandatory)][string] $Relative
+    )
+
+    Assert-PARCondition (-not [string]::IsNullOrWhiteSpace($Relative) -and
+        -not [IO.Path]::IsPathRooted($Relative) -and $Relative -notmatch '\\' -and
+        $Relative -notmatch '(^|/)\.\.?(/|$)') 'featureInput muss ein sicherer repository-relativer Pfad sein.'
+    $root = Resolve-PARPhysicalPath $Repository
+    $path = Resolve-PARPhysicalPath (Join-Path $Repository $Relative)
+    $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    $prefix = $root.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    Assert-PARCondition ($path.StartsWith($prefix, $comparison) -and
+        (Test-Path -LiteralPath $path -PathType Leaf)) "featureInput verlaesst das Repository oder fehlt: $Relative"
+    return $path
+}
+
 function Get-PARRunnerProfileName {
     param(
         [Parameter(Mandatory)][hashtable] $Campaign,
@@ -555,9 +591,7 @@ function Test-PARIntakeReview {
         Assert-PARCondition (-not [string]::IsNullOrWhiteSpace([string] $rows[0].applicability)) `
             "Worker '$($worker.workerId)' benoetigt eine Applicability-Entscheidung."
         $repository = Resolve-PARRepository ([string] $worker.repository) $ManifestDirectory
-        $featureInput = [IO.Path]::GetFullPath((Join-Path $repository ([string] $worker.featureInput)))
-        Assert-PARCondition (Test-Path -LiteralPath $featureInput -PathType Leaf) `
-            "featureInput fehlt: $featureInput"
+        $featureInput = Resolve-PARFeatureInput $repository ([string] $worker.featureInput)
         Assert-PARCondition ((Get-PARNormalizedTextSha256 $featureInput) -eq $targetByPath[$targetPath]) `
             "featureInput-Hash stimmt nicht mit Review ueberein: $($worker.workerId)"
         $inputText = [IO.File]::ReadAllText($featureInput, [Text.UTF8Encoding]::new($false, $true))
@@ -657,6 +691,11 @@ function Test-PARCampaign {
         Assert-PARCondition (-not [string]::IsNullOrWhiteSpace([string] $worker.workerId)) 'workerId darf nicht leer sein.'
         Assert-PARCondition (Test-PARUuid ([string] $worker.runId)) "runId von '$($worker.workerId)' ist keine UUID."
         Assert-PARCondition (-not [string]::IsNullOrWhiteSpace([string] $worker.branch)) "branch von '$($worker.workerId)' fehlt."
+        Assert-PARCondition (-not [string]::IsNullOrWhiteSpace([string] $worker.featureInput) -and
+            -not [IO.Path]::IsPathRooted([string] $worker.featureInput) -and
+            [string] $worker.featureInput -notmatch '\\' -and
+            [string] $worker.featureInput -notmatch '(^|/)\.\.?(/|$)') `
+            "featureInput von '$($worker.workerId)' muss repository-relativ sein."
         $runnerProfileName = Get-PARRunnerProfileName $Campaign $worker
         Assert-PARCondition $Profiles.profiles.ContainsKey($runnerProfileName) "Runner-Profil '$runnerProfileName' fuer Worker '$($worker.workerId)' fehlt."
         $runnerProfileData = $Profiles.profiles[$runnerProfileName]
@@ -1234,10 +1273,7 @@ function Invoke-PARStart {
 
                 $promptPath = Join-Path $promptsRoot "$($worker.workerId).txt"
                 $resultPath = Join-Path $resultsRoot "$($worker.workerId).json"
-                $featureInput = [string] $worker.featureInput
-                if (-not [IO.Path]::IsPathRooted($featureInput)) {
-                    $featureInput = Join-Path $worktree $featureInput
-                }
+                $featureInput = Resolve-PARFeatureInput $worktree ([string] $worker.featureInput)
                 $handoffInstructions = if (@($worker.handoffs).Count -eq 0) {
                     'No outgoing handoff file is required.'
                 } else {

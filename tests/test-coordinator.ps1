@@ -265,6 +265,37 @@ try {
         -RunnerConfig $script:runnerConfig 2>$null
     Assert-Test ($LASTEXITCODE -ne 0) 'Missing campaign fallback profile was accepted'
 
+    foreach ($unsafeInput in @('../outside.md', '/tmp/outside.md', 'subdir/../README.md', 'subdir\README.md')) {
+        $unsafeCampaign = Get-TestCampaign 'unsafe-feature-input' 'ReplicatedTargets' @(
+            (Get-TestWorker 'unsafe-input-a' $pipelineRepo)
+        )
+        $unsafeCampaign.workers[0].featureInput = $unsafeInput
+        $unsafePath = Join-Path $tempRoot "unsafe-input-$([guid]::NewGuid()).json"
+        Write-Data $unsafePath $unsafeCampaign
+        & pwsh -NoProfile -File $coordinator -Action Validate -Manifest $unsafePath `
+            -RunnerConfig $script:runnerConfig 2>$null
+        Assert-Test ($LASTEXITCODE -ne 0) "Unsafe featureInput was accepted: $unsafeInput"
+    }
+
+    $symlinkRepo = Initialize-TestRepository 'symlink-feature-input-repo'
+    $outsideInput = Join-Path $tempRoot 'outside-feature-input.md'
+    'external feature input' | Set-Content -LiteralPath $outsideInput -Encoding utf8NoBOM
+    [void](New-Item -ItemType SymbolicLink -Path (Join-Path $symlinkRepo 'input.md') -Target $outsideInput)
+    & git -C $symlinkRepo add input.md
+    & git -C $symlinkRepo commit -m 'test: linked input' | Out-Null
+    $symlinkCampaign = Get-TestCampaign 'symlink-feature-input' 'ReplicatedTargets' @(
+        (Get-TestWorker 'symlink-input-a' $symlinkRepo)
+    )
+    $symlinkCampaign.workers[0].featureInput = 'input.md'
+    $symlinkPath = Join-Path $tempRoot 'symlink-feature-input.json'
+    Write-Data $symlinkPath $symlinkCampaign
+    $symlinkOutput = & pwsh -NoProfile -File $coordinator -Action Start -Manifest $symlinkPath `
+        -RunnerConfig $script:runnerConfig -State (Join-Path $tempRoot 'symlink-state.json') `
+        -RuntimeRoot (Join-Path $tempRoot 'symlink-runtime') 2>&1
+    Assert-Test ($LASTEXITCODE -ne 0) 'External featureInput symlink was accepted'
+    Assert-Test (($symlinkOutput -join "`n") -match 'featureInput verlaesst das Repository') `
+        'External featureInput symlink failed for an unrelated reason'
+
     $retiredNative = Get-TestCampaign 'retired-native' 'ReplicatedTargets' @(
         (Get-TestWorker 'retired-a' $pipelineRepo)
     )
