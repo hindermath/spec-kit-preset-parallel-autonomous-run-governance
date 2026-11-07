@@ -176,8 +176,53 @@ try {
     $current = Invoke-DependencyValidation $manifest $runnerConfig
     Assert-DependencyTest ($current.ExitCode -eq 0) `
         "Current autonomous preset failed validation: $($current.Output)"
-
+    $withoutGate = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json -AsHashtable
+    $withoutGate.requireAutonomousPreset = $false
+    $withoutGateManifest = Join-Path $tempRoot 'without-gate-campaign.json'
+    Write-DependencyJson $withoutGateManifest $withoutGate
+    $disabledGate = Invoke-DependencyValidation $withoutGateManifest $runnerConfig
+    Assert-DependencyTest ($disabledGate.ExitCode -ne 0 -and
+        $disabledGate.Output -match 'Autonomous-Preset-Gate.*verpflichtend') `
+        'An operational campaign disabled its mandatory Autonomous preset gate.'
     $fixtureWorker = Join-Path $PSScriptRoot 'fixture-worker.ps1'
+    $unsafeProfiles = Get-Content -LiteralPath $runnerConfig -Raw | ConvertFrom-Json -AsHashtable
+    $unsafeProfiles.profiles['spoofed-fixture'] = [ordered]@{
+        agentFamily = 'Fixture'; executable = 'pwsh'
+        arguments = @('-NoProfile', '-Command', 'Write-Output BYPASS', '-File', $fixtureWorker)
+    }
+    $unsafeProfiles.profiles['foreign-worktree'] = [ordered]@{
+        agentFamily = 'Fixture'; executable = 'pwsh'
+        arguments = @(
+            '-NoProfile', '-File', $fixtureWorker,
+            '-CampaignId', '{campaignId}', '-WorkerId', '{workerId}',
+            '-RunId', '{runId}', '-AttemptId', '{attemptId}',
+            '-Worktree', (Split-Path -Parent $tempRoot), '-ResultFile', '{resultFile}',
+            '-Mode', 'Completed', '-HandoffsJson', '{handoffsJson}',
+            '-DelayMilliseconds', '20'
+        )
+    }
+    $relativeArguments = @($unsafeProfiles.profiles['foreign-worktree'].arguments)
+    $relativeArguments[2] = [IO.Path]::GetRelativePath((Get-Location).Path, $fixtureWorker)
+    $relativeArguments[12] = '{worktree}'
+    $unsafeProfiles.profiles['relative-file'] = [ordered]@{
+        agentFamily = 'Fixture'; executable = 'pwsh'; arguments = $relativeArguments
+    }
+    Write-DependencyJson $runnerConfig $unsafeProfiles
+    $previousFixtureRoot = $env:PAR_TEST_FIXTURE_ROOT
+    try {
+        $env:PAR_TEST_FIXTURE_ROOT = $tempRoot
+        foreach ($name in @('spoofed-fixture', 'foreign-worktree', 'relative-file')) {
+            $withoutGate.runnerProfile = $name
+            Write-DependencyJson $withoutGateManifest $withoutGate
+            $unsafeResult = Invoke-DependencyValidation $withoutGateManifest $runnerConfig
+            Assert-DependencyTest ($unsafeResult.ExitCode -ne 0 -and
+                $unsafeResult.Output -match 'Autonomous-Preset-Gate.*verpflichtend') `
+                "Unsafe fixture profile '$name' bypassed the mandatory gate."
+        }
+    } finally {
+        $env:PAR_TEST_FIXTURE_ROOT = $previousFixtureRoot
+    }
+
     $runnerData = Get-Content -LiteralPath $runnerConfig -Raw | ConvertFrom-Json -AsHashtable
     $runnerData.profiles['explicit'] = [ordered]@{
         agentFamily = 'Fixture'

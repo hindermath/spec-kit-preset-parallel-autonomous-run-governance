@@ -10,6 +10,7 @@ $coordinator = Join-Path $presetRoot 'scripts/orchestrate-parallel-autonomous-ru
 $fixtureWorker = Join-Path $PSScriptRoot 'fixture-worker.ps1'
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) "parallel-autonomous-tests-$([guid]::NewGuid())"
 [void](New-Item -ItemType Directory -Path $tempRoot)
+$env:PAR_TEST_FIXTURE_ROOT = $tempRoot
 
 function Assert-Test {
     param([bool] $Condition, [string] $Message)
@@ -387,8 +388,10 @@ try {
     [void]$legacyMergeCampaign.consolidation.Remove('mergeProfile')
     $legacyMergePath = Join-Path $tempRoot 'legacy-merge-read.json'
     Write-Data $legacyMergePath $legacyMergeCampaign
-    & pwsh -NoProfile -File $coordinator -Action Validate -Manifest $legacyMergePath -RunnerConfig $script:runnerConfig | Out-Null
-    Assert-Test ($LASTEXITCODE -eq 0) 'Schema 1.0 MergeAndSync manifest without mergeProfile was not readable'
+    & pwsh -NoProfile -File $coordinator -Action Validate -Manifest $legacyMergePath -RunnerConfig $script:runnerConfig 2>$null | Out-Null
+    Assert-Test ($LASTEXITCODE -ne 0) 'Fixture manifest without a merge profile bypassed the autonomous gate'
+    $legacyMergeCampaign.consolidation.mergeProfile = 'fixture-merge'
+    Write-Data $legacyMergePath $legacyMergeCampaign
 
     $unapprovedMergeState = Join-Path $tempRoot 'unapproved-merge-state.json'
     Write-Data $unapprovedMergeState ([ordered]@{

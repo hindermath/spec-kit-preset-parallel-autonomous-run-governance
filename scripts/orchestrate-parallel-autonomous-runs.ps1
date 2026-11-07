@@ -537,6 +537,126 @@ function Test-PARAutonomousPreset {
     }
 }
 
+function Test-PARFixtureExemption {
+    param(
+        [Parameter(Mandatory)][hashtable] $Campaign,
+        [Parameter(Mandatory)][hashtable] $Profiles,
+        [Parameter(Mandatory)][string] $ManifestDirectory
+    )
+
+    $marker = [string] $env:PAR_TEST_FIXTURE_ROOT
+    if ([string]::IsNullOrWhiteSpace($marker)) { return $false }
+    try {
+        $root = Resolve-PARPhysicalPath $marker
+        $prefix = $root.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+        $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+        $fixtureRunner = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../tests/fixture-worker.ps1'))
+        foreach ($worker in @($Campaign.workers)) {
+            $repository = Resolve-PARPhysicalPath (Resolve-PARRepository ([string] $worker.repository) $ManifestDirectory)
+            if (-not $repository.StartsWith($prefix, $comparison)) { return $false }
+            $profileName = Get-PARRunnerProfileName $Campaign $worker
+            if (-not $Profiles.profiles.ContainsKey($profileName)) { return $false }
+            $profile = $Profiles.profiles[$profileName]
+            $arguments = @($profile.arguments)
+            $expected = @('-NoProfile', '-File', $fixtureRunner,
+                '-CampaignId', '{campaignId}', '-WorkerId', '{workerId}',
+                '-RunId', '{runId}', '-AttemptId', '{attemptId}',
+                '-Worktree', '{worktree}', '-ResultFile', '{resultFile}',
+                '-Mode', 'Completed', '-HandoffsJson', '{handoffsJson}',
+                '-DelayMilliseconds', '0')
+            if ([string] $profile.executable -cne 'pwsh' -or $profile.ContainsKey('preflight') -or
+                $arguments.Count -notin @(21, 23) -or
+                -not [IO.Path]::IsPathFullyQualified([string] $arguments[2]) -or
+                -not [string]::Equals([IO.Path]::GetFullPath([string] $arguments[2]), $fixtureRunner, $comparison)) {
+                return $false
+            }
+            for ($index = 0; $index -lt $expected.Count; $index++) {
+                if ($index -in @(2, 16, 20)) { continue }
+                if ([string] $arguments[$index] -cne [string] $expected[$index]) { return $false }
+            }
+            $delay = 0
+            if ([string] $arguments[16] -notin @('Completed', 'ReadyForMerge') -or
+                -not [int]::TryParse([string] $arguments[20], [ref] $delay) -or
+                $delay -lt 0 -or $delay -gt 5000) { return $false }
+            if ($arguments.Count -eq 23) {
+                $extraName = [string] $arguments[21]
+                $extraValue = [string] $arguments[22]
+                if ($extraName -eq '-ReportedAttemptId') {
+                    if (-not (Test-PARUuid $extraValue)) { return $false }
+                } elseif ($extraName -eq '-HandoffSymlinkOutside') {
+                    if (-not [IO.Path]::IsPathFullyQualified($extraValue)) { return $false }
+                    $extraPath = Resolve-PARPhysicalPath $extraValue
+                    if (-not $extraPath.StartsWith($prefix, $comparison)) { return $false }
+                } else { return $false }
+            }
+        }
+        if ($Campaign.deliveryMode -eq 'PublishPR') { return $false }
+        if ($Campaign.deliveryMode -eq 'MergeAndSync') {
+            $mergeName = [string] $Campaign.consolidation.mergeProfile
+            if (-not $Profiles.mergeProfiles.ContainsKey($mergeName)) { return $false }
+            $mergeProfile = $Profiles.mergeProfiles[$mergeName]
+            if ([string] $Campaign.schemaVersion -eq '1.0') {
+                if ($mergeName -cne 'fixture-merge' -or [string] $mergeProfile.executable -cne 'pwsh' -or
+                    (@($mergeProfile.arguments) -join "`0") -cne (@('-NoProfile', '-Command', 'exit 0') -join "`0")) {
+                    return $false
+                }
+            } else {
+                if ($mergeName -cne 'fixture-provider' -or [string] $mergeProfile.provider -cne 'Local Fixture') {
+                    return $false
+                }
+                $providerScript = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../tests/fixture-provider.ps1'))
+                $preflightArgs = @('-NoProfile', '-File', $providerScript, '-Mode', 'Preflight',
+                    '-StateFile', '<fixture-state>', '-WorkerId', '{workerId}', '-PrUrl', '{prUrl}',
+                    '-ExpectedHead', '{headSha}', '-OutputFile', '{preflightResultFile}')
+                $mergeArgs = @('-NoProfile', '-File', $providerScript, '-Mode', 'Merge',
+                    '-StateFile', '<fixture-state>', '-WorkerId', '{workerId}', '-PrUrl', '{prUrl}',
+                    '-ExpectedHead', '{headSha}')
+                if (-not (Test-PARFixtureProfileCommand $mergeProfile.preflight $preflightArgs 6 $prefix $comparison) -or
+                    -not (Test-PARFixtureProfileCommand $mergeProfile.merge $mergeArgs 6 $prefix $comparison)) {
+                    return $false
+                }
+                $postScript = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../tests/fixture-post-merge.ps1'))
+                $postArgs = @('-NoProfile', '-File', $postScript, '-StateFile', '<fixture-state>',
+                    '-ActionId', '{actionId}', '-Repository', '{repository}', '-ExpectedHead', '{headSha}')
+                foreach ($action in @($Campaign.postMergeActions)) {
+                    if ([string] $action.profile -cne 'fixture-post-merge' -or
+                        -not $Profiles.postMergeProfiles.ContainsKey('fixture-post-merge') -or
+                        -not (Test-PARFixtureProfileCommand $Profiles.postMergeProfiles['fixture-post-merge'] `
+                            $postArgs 4 $prefix $comparison)) { return $false }
+                }
+            }
+        }
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Test-PARFixtureProfileCommand {
+    param(
+        [Parameter(Mandatory)][hashtable] $Profile,
+        [Parameter(Mandatory)][object[]] $Expected,
+        [Parameter(Mandatory)][int] $StateFileIndex,
+        [Parameter(Mandatory)][string] $Prefix,
+        [Parameter(Mandatory)][StringComparison] $Comparison
+    )
+
+    $arguments = @($Profile.arguments)
+    if ([string] $Profile.executable -cne 'pwsh' -or $arguments.Count -ne $Expected.Count) { return $false }
+    for ($index = 0; $index -lt $Expected.Count; $index++) {
+        $actual = [string] $arguments[$index]
+        if ($index -eq 2 -or $index -eq $StateFileIndex) {
+            if (-not [IO.Path]::IsPathFullyQualified($actual)) { return $false }
+            $physical = Resolve-PARPhysicalPath $actual
+            if ($index -eq 2) {
+                if (-not [string]::Equals($physical, [string] $Expected[$index], $Comparison)) { return $false }
+            } elseif (-not $physical.StartsWith($Prefix, $Comparison) -or
+                -not (Test-Path -LiteralPath $physical -PathType Leaf)) { return $false }
+        } elseif ($actual -cne [string] $Expected[$index]) { return $false }
+    }
+    return $true
+}
+
 function Test-PARDag {
     param([Parameter(Mandatory)][object[]] $Workers)
 
@@ -718,6 +838,10 @@ function Test-PARCampaign {
     Assert-PARCondition (@('LocalImplementation', 'PublishPR', 'MergeAndSync') -contains $Campaign.deliveryMode) 'Unbekannter deliveryMode.'
     Assert-PARCondition ([int] $Campaign.maxConcurrency -ge 1 -and [int] $Campaign.maxConcurrency -le 3) 'maxConcurrency muss zwischen 1 und 3 liegen.'
     Assert-PARCondition (@($Campaign.workers).Count -gt 0) 'Mindestens ein Worker ist erforderlich.'
+    if (-not [bool] $Campaign.requireAutonomousPreset -and $Action -notin @('Status', 'Stop')) {
+        Assert-PARCondition (Test-PARFixtureExemption $Campaign $Profiles $ManifestDirectory) `
+            'Autonomous-Preset-Gate ist fuer operative Kampagnen verpflichtend; nur isolierte Test-Fixtures duerfen es deaktivieren.'
+    }
     Assert-PARCondition (-not [string]::IsNullOrWhiteSpace([string] $Campaign.runnerProfile)) 'Campaign runnerProfile fehlt.'
     Assert-PARCondition ($Profiles.ContainsKey('profiles') -and $Profiles.profiles -is [hashtable]) `
         'RunnerConfig profiles fehlt.'

@@ -12,6 +12,7 @@ $fixtureProvider = Join-Path $PSScriptRoot 'fixture-provider.ps1'
 $fixturePostMerge = Join-Path $PSScriptRoot 'fixture-post-merge.ps1'
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) "parallel-autonomous-v2-tests-$([guid]::NewGuid())"
 [void](New-Item -ItemType Directory -Path $tempRoot)
+$env:PAR_TEST_FIXTURE_ROOT = $tempRoot
 
 function Assert-Test {
     param([bool] $Condition, [string] $Message)

@@ -45,6 +45,16 @@ must bind a fully validated `autonomous-run-state.json` inside its worktree
 to the claimed hash, run ID, branch, delivery mode, and completed status.
 The coordinator checks that evidence again before merging.
 
+Das Autonomous-Preset-Gate ist für operative Kampagnen verpflichtend. Das
+Manifest kann es nicht deaktivieren; nur isolierte Test-Fixtures mit einem
+separat gesetzten Testwurzel-Marker und dem mitgelieferten Fixture-Runner
+dürfen die Abhängigkeit überspringen. Status und Stop bleiben lesbar.
+
+The Autonomous preset gate is mandatory for operational campaigns. A manifest
+cannot disable it; only isolated test fixtures with a separate test-root
+marker and the bundled fixture runner may skip the dependency. Status and
+Stop remain available.
+
 [Handbuch / Manual](README.md) | [Lebenszyklus / Lifecycle](lifecycle-and-operations.md)
 
 ## Kampagnenarchitektur / Campaign architecture
