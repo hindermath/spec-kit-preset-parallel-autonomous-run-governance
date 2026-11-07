@@ -8,13 +8,15 @@
     sechs MSL-Sprachrepositories. Die 24 autonomen Worker laufen mit maximal
     drei gleichzeitigen Prozessen nativ auf dem Entwicklungs-Mac. Das Skript
     dokumentiert die ausdruecklichen Entwicklungs-Overrides fuer native
-    Ausfuehrung und GitHub-Billing-Startfehler.
+    Ausfuehrung und GitHub-Billing-Startfehler. -WhatIf stoppt bei jeder
+    schreibenden Aktion vor dem Coordinator, einschliesslich Merge und Git-Sync.
 
     EN: Creates a reproducible pipeline campaign for Units 00 through 03 in six
     MSL language repositories. The 24 autonomous workers run with at most three
     concurrent processes natively on the development Mac. The script records
     the explicit development overrides for native execution and GitHub billing
-    startup failures.
+    startup failures. -WhatIf stops before the child coordinator for every
+    state-changing action, including a requested merge and Git sync.
 
 .PARAMETER Action
     Prepare, Validate, Start, Status, Stop, Resume oder Consolidate.
@@ -249,6 +251,14 @@ if ($Action -eq 'Prepare') {
 
 Assert-FieldCondition (Test-Path -LiteralPath $manifestPath -PathType Leaf) "Manifest fehlt. Zuerst -Action Prepare ausfuehren: $manifestPath"
 Assert-FieldCondition (Test-Path -LiteralPath $runnerPath -PathType Leaf) "Runner-Konfiguration fehlt: $runnerPath"
+
+# A preview stops before repository preflight and child dispatch. The child
+# coordinator and post-merge Git sync have effects this wrapper cannot undo.
+if ($Action -in @('Start', 'Stop', 'Resume', 'Consolidate') -and
+    -not $PSCmdlet.ShouldProcess($OutputRoot, "Run Secure CaseTracker field action '$Action'")) {
+    Write-Output "Preview: $Action would invoke the field coordinator."
+    exit 0
+}
 
 if ($Action -in @('Validate', 'Start')) {
     Test-FieldRepositories
