@@ -187,6 +187,10 @@ try {
     $replicated = Invoke-Campaign (Get-TestCampaign 'replicated' 'ReplicatedTargets' $replicatedWorkers) 'replicated'
     Assert-Test ($replicated.Data.status -eq 'Completed') 'ReplicatedTargets did not complete'
     Assert-Test ($replicated.Data.maximumObservedConcurrency -ge 2) 'ReplicatedTargets did not prove concurrency'
+    $resultDirectories = @($replicated.Data.workers | ForEach-Object { Split-Path -Parent ([string] $_.resultPath) })
+    Assert-Test ((@($resultDirectories | Sort-Object -Unique)).Count -eq 3 -and
+        @($resultDirectories | Where-Object { -not $_.StartsWith((Join-Path $replicated.Runtime 'results') + [IO.Path]::DirectorySeparatorChar) }).Count -eq 0) `
+        'Concurrent workers did not receive isolated result directories'
     $replicatedPrompt = Get-Content -LiteralPath (Join-Path $replicated.Runtime 'prompts/replicated-01.txt') -Raw
     Assert-Test ($replicatedPrompt.Contains('Fixture operator instruction.')) 'Campaign operator instructions were not routed to the worker'
     Assert-Test ($replicatedPrompt.Contains("Remain on the assigned branch '")) 'Assigned branch boundary was not routed to the worker'

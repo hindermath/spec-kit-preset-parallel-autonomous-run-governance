@@ -1519,7 +1519,10 @@ function Invoke-PARStart {
 
                 $promptPath = Join-Path $promptsRoot "$($worker.workerId).txt"
                 $attemptId = [guid]::NewGuid().ToString('N')
-                $resultPath = Join-Path $resultsRoot "$($worker.workerId)-$attemptId.json"
+                # The sandbox grants only this worker's result directory.
+                $workerResultRoot = Join-Path $resultsRoot "$($worker.workerId)-$attemptId"
+                [void](New-Item -ItemType Directory -Path $workerResultRoot)
+                $resultPath = Join-Path $workerResultRoot 'result.json'
                 $featureInput = Resolve-PARFeatureInput $worktree ([string] $worker.featureInput)
                 if ([bool] $Campaign.requireAutonomousPreset) {
                     Assert-PARCondition (Test-PARAutonomousPreset $worktree) `
@@ -1592,7 +1595,7 @@ Do not infer remote, merge, bypass, cancellation, secret, or provider authority.
                     prompt = $prompt
                     promptFile = $promptPath
                     resultFile = $resultPath
-                    resultDirectory = $resultsRoot
+                    resultDirectory = $workerResultRoot
                     handoffsJson = $handoffsJson
                     model = if ($runnerProfileData.ContainsKey('model')) { [string] $runnerProfileData.model } else { '' }
                     reasoningEffort = if ($runnerProfileData.ContainsKey('reasoningEffort')) { [string] $runnerProfileData.reasoningEffort } else { '' }
