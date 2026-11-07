@@ -171,6 +171,14 @@ erteilt keine pauschale Netzwerk- oder Schreibberechtigung.
 `RuntimeRoot` enthaelt Worktrees, Locks, Logs und Prozessresultate. Dieser
 Bereich bleibt ausserhalb versionierter Feature-Artefakte. Der normale Checkout
 wird weder gewechselt noch zurueckgesetzt.
+Der operative Campaign-State liegt standardmaessig direkt im `RuntimeRoot`.
+Ein expliziter `-State`-Pfad muss dort liegen; `RuntimeRoot` darf nicht in einem
+Worker-Repository liegen. Vorherige manifestnahe Checkpoints sind nur lesbare
+Altbelege und benoetigen einen neuen Lauf fuer sichere Fortsetzung.
+Vor Uebernahme vorhandener Worker werden Ergebnis-Hash, Versuch, Worktree-
+Registrierung, Branch, HEAD und Autonomous-State erneut geprueft. Erfolgreiche
+Post-Merge-Aktionen benoetigen einen unveraenderten Beleg im `RuntimeRoot`, der
+Aktion, Profil, Repository, Merge-Commit und Exitcode bindet.
 Runner-Logs werden direkt in Dateien gestreamt. Je Stream gelten 16 MiB und
 vier Stunden Laufzeit; Profilbefehle haben 4 MiB je Stream und fünf Minuten.
 
@@ -227,6 +235,14 @@ optional status metadata and never guess another agent's configuration.
 
 `RuntimeRoot` contains worktrees, locks, logs, and process results outside
 tracked feature artifacts. The normal checkout is never switched or reset.
+Operational campaign state defaults directly under `RuntimeRoot`. An explicit
+`-State` path must be there, and `RuntimeRoot` must be outside every worker
+repository. Earlier manifest-local checkpoints are read-only historical
+evidence and require a new run for safe continuation.
+Before reusing a worker, the coordinator rechecks its result hash, attempt,
+registered worktree, branch, HEAD, and Autonomous state. Successful post-merge
+actions require an unchanged receipt under `RuntimeRoot` binding the action,
+profile, repository, merge commit, and exit code.
 Runner logs stream directly to files, capped at 16 MiB per stream and four
 hours. Profile commands are capped at 4 MiB per stream and five minutes.
 

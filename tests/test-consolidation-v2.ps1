@@ -361,7 +361,8 @@ try {
             'Resolve-PARRepository', 'Get-PARRemoteRepositoryIdentity',
             'Get-PARExpectedPrIdentity', 'ConvertTo-PARArgumentList', 'Invoke-PARProcessAsync',
             'Invoke-PARProfileCommand', 'Invoke-PARProviderPreflight',
-            'Confirm-PARAutonomousState', 'Confirm-PARPublicationWorkerState')) {
+            'Confirm-PARAutonomousState', 'Confirm-PARWorkerExecutionEvidence',
+            'Confirm-PARPublicationWorkerState')) {
         $definition = @($coordinatorAst.FindAll({ param($node)
             $node -is [System.Management.Automation.Language.FunctionDefinitionAst]
         }, $true) | Where-Object Name -eq $name)[0]
@@ -431,6 +432,12 @@ try {
     Assert-Test (-not $statusJson.Contains('SENSITIVE-RUNNER-DATA-MUST-NOT-LEAK')) 'JSON status leaked runner configuration'
     Assert-Test ($statusText.Contains('Agent-Standard/nicht deklariert')) 'Text status omitted undeclared model marker'
     Assert-Test (-not $statusText.Contains('SENSITIVE-RUNNER-DATA-MUST-NOT-LEAK')) 'Text status leaked runner configuration'
+    $receiptTamper = Read-TestState $mixed.State
+    $receiptTamper.postMergeActions[0].receiptSha256 = '0' * 64
+    Write-TestJson $mixed.State $receiptTamper
+    Invoke-TestConsolidate $mixed -ExpectFailure
+    Assert-Test ((Read-TestState $mixed.State).status -ne 'Completed') `
+        'Forged successful post-merge action completed the campaign'
 
     $alternative = New-TestCase 'selected-alternative-actions' -WorkerCount 2 -Alternative
     Invoke-TestConsolidate $alternative -SelectedWorker 'worker-00'
@@ -460,6 +467,22 @@ try {
     Invoke-TestConsolidate $foreignPr -ExpectFailure
     Assert-Test ((Read-TestState $foreignPr.State).status -eq 'NeedsRevalidation') `
         'Foreign PR head repository did not require revalidation'
+
+    $forgedResult = New-TestCase 'forged-worker-result'
+    $forgedCheckpoint = Read-TestState $forgedResult.State
+    $forgedCheckpoint.workers[0].resultSha256 = '0' * 64
+    Write-TestJson $forgedResult.State $forgedCheckpoint
+    Invoke-TestConsolidate $forgedResult -ExpectFailure
+    Assert-Test ((Read-TestState $forgedResult.State).status -eq 'ReadyForConsolidation') `
+        'Forged worker result reached provider merge preflight'
+    $forgedCheckpoint.status = 'PausedByUser'
+    Write-TestJson $forgedResult.State $forgedCheckpoint
+    & pwsh -NoProfile -File $coordinator -Action Start -Manifest $forgedResult.Manifest `
+        -RunnerConfig $forgedResult.Runner -State $forgedResult.State `
+        -RuntimeRoot $forgedResult.Runtime 2>$null | Out-Null
+    Assert-Test ($LASTEXITCODE -ne 0 -and
+        (Read-TestState $forgedResult.State).status -eq 'PausedByUser') `
+        'Start skipped a forged completed worker checkpoint'
 
     $wrongBase = New-TestCase 'wrong-pr-base'
     Update-ProviderWorker $wrongBase 'worker-00' {

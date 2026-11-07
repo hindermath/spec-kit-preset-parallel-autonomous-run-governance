@@ -176,6 +176,13 @@ try {
     $current = Invoke-DependencyValidation $manifest $runnerConfig
     Assert-DependencyTest ($current.ExitCode -eq 0) `
         "Current autonomous preset failed validation: $($current.Output)"
+    $outsideState = Join-Path $tempRoot 'outside-runtime-state.json'
+    $outsideCheckpoint = @(& pwsh -NoProfile -File $coordinator -Action Start `
+        -Manifest $manifest -RunnerConfig $runnerConfig -State $outsideState `
+        -RuntimeRoot (Join-Path $tempRoot 'outside-state-runtime') 2>&1)
+    Assert-DependencyTest ($LASTEXITCODE -ne 0 -and
+        ($outsideCheckpoint -join ' ') -match 'Campaign-State muss direkt') `
+        'Operational campaign accepted a checkpoint outside RuntimeRoot.'
     $publishCampaign = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json -AsHashtable
     $publishCampaign.campaignId = [Guid]::NewGuid().ToString()
     $publishCampaign.deliveryMode = 'PublishPR'
@@ -200,7 +207,7 @@ try {
     $validPublication = Invoke-DependencyValidation $publishManifest $publishRunnerConfig
     Assert-DependencyTest ($validPublication.ExitCode -eq 0) `
         "PublishPR read-only profile failed validation: $($validPublication.Output)"
-    $publishState = Join-Path $tempRoot 'publish-state.json'
+    $publishState = Join-Path $tempRoot 'publish-runtime/state.json'
     & pwsh -NoProfile -File $coordinator -Action Start -Manifest $publishManifest `
         -RunnerConfig $publishRunnerConfig -State $publishState `
         -RuntimeRoot (Join-Path $tempRoot 'publish-runtime') | Out-Null
@@ -278,7 +285,7 @@ try {
     $explicitCampaign.workers[0].branch = 'parallel/dependency/explicit-without-state'
     $explicitManifest = Join-Path $tempRoot 'explicit-campaign.json'
     Write-DependencyJson $explicitManifest $explicitCampaign
-    $explicitState = Join-Path $tempRoot 'explicit-state.json'
+    $explicitState = Join-Path $tempRoot 'explicit-runtime/state.json'
     $explicitOutput = @(& pwsh -NoProfile -File $coordinator -Action Start -Manifest $explicitManifest `
         -RunnerConfig $runnerConfig -State $explicitState -RuntimeRoot (Join-Path $tempRoot 'explicit-runtime') 2>&1)
     Assert-DependencyTest (Test-Path -LiteralPath $explicitState -PathType Leaf) `
@@ -302,7 +309,7 @@ try {
     $validCampaign.workers[0].branch = 'parallel/dependency/explicit-valid-state'
     $validManifest = Join-Path $tempRoot 'valid-state-campaign.json'
     Write-DependencyJson $validManifest $validCampaign
-    $validState = Join-Path $tempRoot 'valid-state.json'
+    $validState = Join-Path $tempRoot 'valid-runtime/state.json'
     $validOutput = @(& pwsh -NoProfile -File $coordinator -Action Start -Manifest $validManifest `
         -RunnerConfig $runnerConfig -State $validState -RuntimeRoot (Join-Path $tempRoot 'valid-runtime') 2>&1)
     $validStateData = Get-Content -LiteralPath $validState -Raw | ConvertFrom-Json
@@ -313,8 +320,8 @@ try {
     $campaign = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json -AsHashtable
     $campaign.workers[0].baseRef = $baselineWithoutPreset
     Write-DependencyJson $manifest $campaign
-    $checkoutState = Join-Path $tempRoot 'checkout-state.json'
     $checkoutRuntime = Join-Path $tempRoot 'checkout-runtime'
+    $checkoutState = Join-Path $checkoutRuntime 'state.json'
     $checkoutOutput = @(& pwsh -NoProfile -File $coordinator -Action Start -Manifest $manifest `
         -RunnerConfig $runnerConfig -State $checkoutState -RuntimeRoot $checkoutRuntime 2>&1)
     Assert-DependencyTest ($LASTEXITCODE -ne 0 -and
@@ -331,7 +338,7 @@ try {
     $campaign.workers[0].branch = 'parallel/dependency/missing-payload'
     Write-DependencyJson $manifest $campaign
     $payloadOutput = @(& pwsh -NoProfile -File $coordinator -Action Start -Manifest $manifest `
-        -RunnerConfig $runnerConfig -State (Join-Path $tempRoot 'payload-state.json') `
+        -RunnerConfig $runnerConfig -State (Join-Path $tempRoot 'payload-runtime/state.json') `
         -RuntimeRoot (Join-Path $tempRoot 'payload-runtime') 2>&1)
     Assert-DependencyTest ($LASTEXITCODE -ne 0 -and
         ($payloadOutput -join [Environment]::NewLine) -match 'Worker-Checkout') `
@@ -352,7 +359,7 @@ try {
     $campaign.workers[0].branch = 'parallel/dependency/linked-preset'
     Write-DependencyJson $manifest $campaign
     $linkedOutput = @(& pwsh -NoProfile -File $coordinator -Action Start -Manifest $manifest `
-        -RunnerConfig $runnerConfig -State (Join-Path $tempRoot 'linked-state.json') `
+        -RunnerConfig $runnerConfig -State (Join-Path $tempRoot 'linked-runtime/state.json') `
         -RuntimeRoot (Join-Path $tempRoot 'linked-runtime') 2>&1)
     Assert-DependencyTest ($LASTEXITCODE -ne 0 -and
         ($linkedOutput -join [Environment]::NewLine) -match 'Worker-Checkout') `
@@ -408,8 +415,8 @@ try {
     $reviewSource = Invoke-DependencyValidation $manifest $runnerConfig
     Assert-DependencyTest ($reviewSource.ExitCode -eq 0) `
         "Source review fixture failed validation: $($reviewSource.Output)"
-    $reviewState = Join-Path $tempRoot 'review-checkout-state.json'
     $reviewRuntime = Join-Path $tempRoot 'review-checkout-runtime'
+    $reviewState = Join-Path $reviewRuntime 'state.json'
     $reviewOutput = @(& pwsh -NoProfile -File $coordinator -Action Start -Manifest $manifest `
         -RunnerConfig $runnerConfig -State $reviewState -RuntimeRoot $reviewRuntime 2>&1)
     Assert-DependencyTest ($LASTEXITCODE -ne 0 -and

@@ -22,10 +22,11 @@
     Lokale JSON-Datei mit Executable/Argument-Array-Profilen.
 
 .PARAMETER State
-    Optionaler Pfad zur Campaign-State-Datei.
+    Optionaler Pfad zur Campaign-State-Datei direkt im RuntimeRoot.
 
 .PARAMETER RuntimeRoot
-    Nicht versioniertes Verzeichnis fuer Worktrees, Logs, Locks und Ergebnisse.
+    Nicht versioniertes, von Worker-Repositories getrenntes Verzeichnis fuer
+    Campaign-State, Worktrees, Logs, Locks und Ergebnisse.
 
 .PARAMETER SelectedWorker
     Menschlich ausgewaehlter Worker fuer AlternativeSolutions.
@@ -408,6 +409,43 @@ function Resolve-PARPhysicalPath {
         }
     }
     return [IO.Path]::GetFullPath($current)
+}
+
+function Assert-PARCheckpointBoundary {
+    param(
+        [Parameter(Mandatory)][hashtable] $Campaign,
+        [Parameter(Mandatory)][string] $ManifestDirectory,
+        [Parameter(Mandatory)][string] $StatePath,
+        [Parameter(Mandatory)][string] $RuntimePath,
+        [Parameter(Mandatory)][string] $Action
+    )
+
+    # Isolated legacy fixtures keep their test-local state layout.
+    if (-not [bool] $Campaign.requireAutonomousPreset -and
+        -not [string]::IsNullOrWhiteSpace([string] $env:PAR_TEST_FIXTURE_ROOT)) { return }
+    if (-not (Test-Path -LiteralPath $RuntimePath -PathType Container)) {
+        Assert-PARCondition ($Action -eq 'Start') 'RuntimeRoot fuer bestehenden Campaign-State fehlt.'
+        [void](New-Item -ItemType Directory -Path $RuntimePath -Force)
+    }
+    $root = Resolve-PARPhysicalPath $RuntimePath
+    $stateParent = Resolve-PARPhysicalPath (Split-Path -Parent $StatePath)
+    $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    Assert-PARCondition ([string]::Equals($root, $stateParent, $comparison)) `
+        'Operativer Campaign-State muss direkt im geschuetzten RuntimeRoot liegen.'
+    if (Test-Path -LiteralPath $StatePath) {
+        $entry = Get-Item -LiteralPath $StatePath -Force
+        Assert-PARCondition (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) `
+            'Campaign-State darf kein Symlink oder Reparse Point sein.'
+    }
+    $prefix = $root.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    foreach ($worker in @($Campaign.workers)) {
+        $repository = Resolve-PARPhysicalPath (Resolve-PARRepository ([string] $worker.repository) $ManifestDirectory)
+        Assert-PARCondition (-not [string]::Equals($root, $repository, $comparison) -and
+            -not $root.StartsWith($repository.TrimEnd([IO.Path]::DirectorySeparatorChar) +
+                [IO.Path]::DirectorySeparatorChar, $comparison) -and
+            -not $repository.StartsWith($prefix, $comparison)) `
+            'RuntimeRoot muss ausserhalb aller Worker-Repositories liegen.'
+    }
 }
 
 function Resolve-PARFeatureInput {
@@ -1206,6 +1244,7 @@ function Get-PARInitialCampaignState {
             status = 'Pending'
             attemptCount = 0
             exitCode = $null
+            receiptSha256 = 'N/A'
             startedAt = $null
             completedAt = $null
             summary = 'Not started.'
@@ -1605,36 +1644,7 @@ function Confirm-PARPublicationWorkerState {
         [Parameter(Mandatory)][string] $RuntimePath
     )
 
-    $expectedWorktree = Resolve-PARPhysicalPath (Join-Path $RuntimePath "worktrees/$($Worker.workerId)")
-    $pathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
-    Assert-PARCondition ([string]::Equals((Resolve-PARPhysicalPath ([string] $WorkerState.worktree)),
-        $expectedWorktree, $pathComparison)) `
-        "PublishPR-Worktree passt nicht zum Worker '$($Worker.workerId)'."
-    $attemptId = [string] $WorkerState.attemptId
-    Assert-PARCondition (Test-PARUuid $attemptId) "PublishPR-Versuchs-ID fehlt: $($Worker.workerId)"
-    $expectedResult = Join-Path $RuntimePath "results/$($Worker.workerId)-$attemptId/result.json"
-    Assert-PARCondition ([string]::Equals([IO.Path]::GetFullPath([string] $WorkerState.resultPath),
-        [IO.Path]::GetFullPath($expectedResult), $pathComparison) -and
-        (Test-Path -LiteralPath $expectedResult -PathType Leaf)) `
-        "PublishPR-Ergebnis fehlt im geschuetzten Worker-Ordner: $($Worker.workerId)"
-    Assert-PARCondition ([string] $WorkerState.resultSha256 -match '^[0-9a-f]{64}$' -and
-        (Get-PARSha256 $expectedResult) -ceq [string] $WorkerState.resultSha256) `
-        "PublishPR-Ergebnis wurde veraendert: $($Worker.workerId)"
-    $result = Read-PARJson $expectedResult
-    Assert-PARCondition ([string] $result.campaignId -ceq [string] $Campaign.campaignId -and
-        [string] $result.workerId -ceq [string] $Worker.workerId -and
-        [string] $result.runId -ceq [string] $Worker.runId -and
-        [string] $result.attemptId -ceq $attemptId -and
-        [string] $result.status -ceq 'ReadyForMerge' -and
-        [string] $result.headSha -ceq [string] $WorkerState.headSha -and
-        [string] $result.prUrl -ceq [string] $WorkerState.prUrl) `
-        "PublishPR-Ergebnis passt nicht zur Kampagne: $($Worker.workerId)"
-    $head = (Invoke-PARGit $expectedWorktree @('rev-parse', 'HEAD')).Output[0]
-    $branch = (Invoke-PARGit $expectedWorktree @('branch', '--show-current')).Output[0]
-    Assert-PARCondition ([string] $head -ceq [string] $WorkerState.headSha -and
-        [string] $branch -ceq [string] $Worker.branch) `
-        "PublishPR-Worktree-Head/Branch ist gedriftet: $($Worker.workerId)"
-    Confirm-PARAutonomousState $Campaign $Worker $expectedWorktree $result
+    Confirm-PARWorkerExecutionEvidence $Campaign $Worker $WorkerState $ManifestDirectory $RuntimePath
     $publicationProfile = $Profiles.publicationProfiles[[string] $Campaign.publicationProfile]
     $preflight = Invoke-PARProviderPreflight $Campaign $publicationProfile $Worker $WorkerState `
         $ManifestDirectory $RuntimePath -PublicationOnly
@@ -1643,6 +1653,55 @@ function Confirm-PARPublicationWorkerState {
     $WorkerState.prBaseRepository = [string] $preflight.baseRepository
     $WorkerState.status = 'ReadyForMerge'
     $WorkerState.summary = 'Published PR identity and exact head verified by provider.'
+}
+
+function Confirm-PARWorkerExecutionEvidence {
+    param(
+        [Parameter(Mandatory)][hashtable] $Campaign,
+        [Parameter(Mandatory)][hashtable] $Worker,
+        [Parameter(Mandatory)][hashtable] $WorkerState,
+        [Parameter(Mandatory)][string] $ManifestDirectory,
+        [Parameter(Mandatory)][string] $RuntimePath
+    )
+
+    $expectedWorktree = Resolve-PARPhysicalPath (Join-Path $RuntimePath "worktrees/$($Worker.workerId)")
+    $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    Assert-PARCondition ([string]::Equals((Resolve-PARPhysicalPath ([string] $WorkerState.worktree)),
+        $expectedWorktree, $comparison)) "Worker-Worktree passt nicht zur Kampagne: $($Worker.workerId)"
+    $repository = Resolve-PARRepository ([string] $Worker.repository) $ManifestDirectory
+    $registeredOutput = (Invoke-PARGit $repository @('worktree', 'list', '--porcelain')).Output
+    $registered = @($registeredOutput | Where-Object { $_ -like 'worktree *' } |
+        ForEach-Object { $_.Substring(9) })
+    Assert-PARCondition (@($registered | Where-Object {
+        (Test-Path -LiteralPath $_ -PathType Container) -and
+        [string]::Equals((Resolve-PARPhysicalPath $_), $expectedWorktree, $comparison)
+    }).Count -eq 1) "Worker-Worktree ist nicht beim deklarierten Repository registriert: $($Worker.workerId)"
+    $attemptId = [string] $WorkerState.attemptId
+    Assert-PARCondition (Test-PARUuid $attemptId) "Worker-Versuchs-ID fehlt: $($Worker.workerId)"
+    $expectedResult = Join-Path $RuntimePath "results/$($Worker.workerId)-$attemptId/result.json"
+    Assert-PARCondition ([string]::Equals([IO.Path]::GetFullPath([string] $WorkerState.resultPath),
+        [IO.Path]::GetFullPath($expectedResult), $comparison) -and
+        (Test-Path -LiteralPath $expectedResult -PathType Leaf)) `
+        "Worker-Ergebnis fehlt im geschuetzten Versuchspfad: $($Worker.workerId)"
+    Assert-PARCondition ([string] $WorkerState.resultSha256 -match '^[0-9a-f]{64}$' -and
+        (Get-PARSha256 $expectedResult) -ceq [string] $WorkerState.resultSha256) `
+        "Worker-Ergebnis wurde nach dem Lauf veraendert: $($Worker.workerId)"
+    $result = Read-PARJson $expectedResult
+    $expectedStatus = if ($Campaign.deliveryMode -eq 'LocalImplementation') { 'Completed' } else { 'ReadyForMerge' }
+    Assert-PARCondition ([string] $result.campaignId -ceq [string] $Campaign.campaignId -and
+        [string] $result.workerId -ceq [string] $Worker.workerId -and
+        [string] $result.runId -ceq [string] $Worker.runId -and
+        [string] $result.attemptId -ceq $attemptId -and
+        [string] $result.status -ceq $expectedStatus -and
+        [string] $result.headSha -ceq [string] $WorkerState.headSha -and
+        [string] $result.prUrl -ceq [string] $WorkerState.prUrl) `
+        "Worker-Ergebnis passt nicht zur Kampagne: $($Worker.workerId)"
+    $head = (Invoke-PARGit $expectedWorktree @('rev-parse', 'HEAD')).Output[0]
+    $branch = (Invoke-PARGit $expectedWorktree @('branch', '--show-current')).Output[0]
+    Assert-PARCondition ([string] $head -ceq [string] $WorkerState.headSha -and
+        [string] $branch -ceq [string] $Worker.branch) `
+        "Worker-Worktree-Head/Branch ist gedriftet: $($Worker.workerId)"
+    Confirm-PARAutonomousState $Campaign $Worker $expectedWorktree $result
 }
 
 function Invoke-PARStart {
@@ -1664,6 +1723,12 @@ function Invoke-PARStart {
             Initialize-PARStateShape $campaignState $Campaign $Profiles
             Assert-PARCondition ($campaignState.campaignId -eq $Campaign.campaignId) 'State campaignId stimmt nicht mit Manifest ueberein.'
             Assert-PARCondition ($campaignState.manifestSha256 -eq (Get-PARSha256 $ManifestPath)) 'Manifest hat sich seit dem State-Checkpoint geaendert.'
+            foreach ($workerState in @($campaignState.workers | Where-Object {
+                $_.status -in @('Completed', 'ReadyForMerge', 'Merged', 'NeedsRevalidation')
+            })) {
+                $worker = Get-PARCampaignWorker $Campaign ([string] $workerState.workerId)
+                Confirm-PARWorkerExecutionEvidence $Campaign $worker $workerState $ManifestDirectory $RuntimePath
+            }
             if (-not $IsResume) {
                 Assert-PARCondition (@('Prepared', 'PausedByUser', 'Interrupted') -contains $campaignState.status) 'Bestehende Campaign ist nicht startbar; Resume oder Status verwenden.'
             }
@@ -2133,7 +2198,7 @@ function Confirm-PARWorkerProviderState {
     $worker = Get-PARCampaignWorker $Campaign $WorkerId
     $workerState = Get-PARWorkerState $CampaignState $WorkerId
     try {
-        Confirm-PARAutonomousState $Campaign $worker ([string] $workerState.worktree) $workerState
+        Confirm-PARWorkerExecutionEvidence $Campaign $worker $workerState $ManifestDirectory $RuntimePath
         $preflight = Invoke-PARProviderPreflight $Campaign $MergeProfile $worker $workerState $ManifestDirectory $RuntimePath
         Sync-PARStopRequest $CampaignState $StatePath
         $workerState.providerState = [string] $preflight.state
@@ -2236,6 +2301,50 @@ function Assert-PARPostMergeStateContract {
     }
 }
 
+function Get-PARActionReceiptPath {
+    param([Parameter(Mandatory)][string] $RuntimePath,
+        [Parameter(Mandatory)][string] $ActionId)
+
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes($ActionId)
+    $digest = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+    return Join-Path $RuntimePath "post-merge-receipts/$digest.json"
+}
+
+function Assert-PARActionReceipt {
+    param(
+        [Parameter(Mandatory)][hashtable] $Campaign,
+        [Parameter(Mandatory)][hashtable] $Action,
+        [Parameter(Mandatory)][hashtable] $ActionState,
+        [Parameter(Mandatory)][hashtable] $WorkerState,
+        [Parameter(Mandatory)][string] $Repository,
+        [Parameter(Mandatory)][string] $RuntimePath
+    )
+
+    $path = Get-PARActionReceiptPath $RuntimePath ([string] $Action.actionId)
+    Assert-PARCondition (Test-Path -LiteralPath $path -PathType Leaf) `
+        "Post-Merge-Aktion '$($Action.actionId)' hat keinen Abschlussbeleg."
+    $root = Resolve-PARPhysicalPath $RuntimePath
+    $physicalPath = Resolve-PARPhysicalPath $path
+    $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    Assert-PARCondition $physicalPath.StartsWith(
+        $root.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar,
+        $comparison) "Post-Merge-Abschlussbeleg verlaesst RuntimeRoot: $($Action.actionId)"
+    Assert-PARCondition ((Test-Path -LiteralPath $path -PathType Leaf) -and
+        [string] $ActionState.receiptSha256 -match '^[0-9a-f]{64}$' -and
+        (Get-PARSha256 $path) -ceq [string] $ActionState.receiptSha256) `
+        "Post-Merge-Aktion '$($Action.actionId)' hat keinen unveraenderten Abschlussbeleg."
+    $receipt = Read-PARJson $path
+    Assert-PARCondition ([string] $receipt.campaignId -ceq [string] $Campaign.campaignId -and
+        [string] $receipt.actionId -ceq [string] $Action.actionId -and
+        [string] $receipt.workerId -ceq [string] $Action.workerId -and
+        [string] $receipt.profile -ceq [string] $Action.profile -and
+        [string] $receipt.repository -ceq (Resolve-PARPhysicalPath $Repository) -and
+        [string] $receipt.mergeCommitSha -ceq [string] $WorkerState.mergeCommitSha -and
+        [int] $receipt.attemptCount -eq [int] $ActionState.attemptCount -and
+        [int] $receipt.exitCode -eq 0 -and [int] $ActionState.exitCode -eq 0) `
+        "Post-Merge-Aktion '$($Action.actionId)' hat keinen passenden Erfolgbeleg."
+}
+
 function Invoke-PARPostMergeActions {
     param(
         [Parameter(Mandatory)][hashtable] $Campaign,
@@ -2259,6 +2368,11 @@ function Invoke-PARPostMergeActions {
                 continue
             }
             if ($actionState.status -eq 'Succeeded') {
+                $action = @($Campaign.postMergeActions | Where-Object actionId -eq $actionState.actionId)[0]
+                $worker = Get-PARCampaignWorker $Campaign ([string] $action.workerId)
+                $workerState = Get-PARWorkerState $CampaignState ([string] $action.workerId)
+                $repository = Resolve-PARRepository ([string] $worker.repository) $ManifestDirectory
+                Assert-PARActionReceipt $Campaign $action $actionState $workerState $repository $RuntimePath
                 continue
             }
             if (Test-PARConsolidationPause $CampaignState $StatePath) {
@@ -2315,8 +2429,34 @@ function Invoke-PARPostMergeActions {
                 throw "Post-Merge-Aktion '$($action.actionId)' ist fehlgeschlagen."
             }
 
-            $actionState.status = 'Succeeded'
             $actionState.completedAt = [DateTime]::UtcNow.ToString('o')
+            $receiptPath = Get-PARActionReceiptPath $RuntimePath ([string] $action.actionId)
+            [void](New-Item -ItemType Directory -Path (Split-Path -Parent $receiptPath) -Force)
+            $root = Resolve-PARPhysicalPath $RuntimePath
+            $receiptDirectory = Resolve-PARPhysicalPath (Split-Path -Parent $receiptPath)
+            $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+            Assert-PARCondition $receiptDirectory.StartsWith(
+                $root.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar,
+                $comparison) 'Post-Merge-Belegordner verlaesst RuntimeRoot.'
+            if (Test-Path -LiteralPath $receiptPath) {
+                $receiptEntry = Get-Item -LiteralPath $receiptPath -Force
+                Assert-PARCondition (($receiptEntry.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) `
+                    'Post-Merge-Belegdatei ist umgeleitet.'
+            }
+            Write-PARJsonAtomic $receiptPath ([ordered]@{
+                schemaVersion = '1.0'
+                campaignId = [string] $Campaign.campaignId
+                actionId = [string] $action.actionId
+                workerId = [string] $action.workerId
+                profile = [string] $action.profile
+                repository = Resolve-PARPhysicalPath $repository
+                mergeCommitSha = [string] $workerState.mergeCommitSha
+                attemptCount = [int] $actionState.attemptCount
+                exitCode = 0
+                completedAt = [string] $actionState.completedAt
+            })
+            $actionState.receiptSha256 = Get-PARSha256 $receiptPath
+            $actionState.status = 'Succeeded'
             $actionState.summary = 'Action completed.'
             Add-PARStateEvent $CampaignState 'PostMergeActionSucceeded' $actionState.summary `
                 -WorkerId ([string] $worker.workerId) -Attempt ([int] $actionState.attemptCount)
@@ -2384,6 +2524,8 @@ function Invoke-PARConsolidateCore {
         $workerState = Get-PARWorkerState $campaignState $id
         Assert-PARCondition ($workerState.status -in $eligibleStatuses) `
             "Worker '$id' ist nicht konsolidierungsbereit."
+        $worker = Get-PARCampaignWorker $Campaign $id
+        Confirm-PARWorkerExecutionEvidence $Campaign $worker $workerState $ManifestDirectory $RuntimePath
     }
 
     if (-not $DoMerge) {
@@ -2636,15 +2778,17 @@ $campaign = Read-PARJson $manifestPath
 Assert-PARSchemaVersion $campaign 'Campaign'
 $script:CurrentIntakeReview = Test-PARIntakeReview $campaign $manifestDirectory
 
-if (-not $State) {
-    $State = Join-Path $manifestDirectory 'parallel-campaign-state.json'
-}
-$statePath = [IO.Path]::GetFullPath($State)
-
 if (-not $RuntimeRoot) {
     $RuntimeRoot = Join-Path ([Environment]::GetFolderPath('UserProfile')) ".specify/parallel-runs/$($campaign.campaignId)"
 }
 $runtimePath = [IO.Path]::GetFullPath($RuntimeRoot)
+if (-not $State) {
+    $State = Join-Path $runtimePath 'parallel-campaign-state.json'
+}
+$statePath = [IO.Path]::GetFullPath($State)
+if ($Action -ne 'Validate') {
+    Assert-PARCheckpointBoundary $campaign $manifestDirectory $statePath $runtimePath $Action
+}
 
 if ($Action -eq 'Status') {
     $statusData = Read-PARJson $statePath

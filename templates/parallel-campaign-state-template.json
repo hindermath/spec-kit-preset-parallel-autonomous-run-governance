@@ -67,6 +67,7 @@
       "status": "Pending",
       "attemptCount": 0,
       "exitCode": null,
+      "receiptSha256": "N/A",
       "startedAt": null,
       "completedAt": null,
       "summary": "Not started."

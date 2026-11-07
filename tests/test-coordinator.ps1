@@ -242,9 +242,9 @@ try {
     $alternativeWorkers = 1..3 | ForEach-Object { Get-TestWorker "alternative-0$_" $alternativeRepo }
     $alternative = Invoke-Campaign (Get-TestCampaign 'alternatives' 'AlternativeSolutions' $alternativeWorkers) 'alternatives'
     Assert-Test ($alternative.Data.status -eq 'AwaitingSelection') 'AlternativeSolutions did not await selection'
-    & pwsh -NoProfile -File $coordinator -Action Consolidate -Manifest $alternative.Manifest -RunnerConfig $script:runnerConfig -State $alternative.State 2>$null
+    & pwsh -NoProfile -File $coordinator -Action Consolidate -Manifest $alternative.Manifest -RunnerConfig $script:runnerConfig -State $alternative.State -RuntimeRoot $alternative.Runtime 2>$null
     Assert-Test ($LASTEXITCODE -ne 0) 'Alternative consolidation accepted missing human selection'
-    & pwsh -NoProfile -File $coordinator -Action Consolidate -Manifest $alternative.Manifest -RunnerConfig $script:runnerConfig -State $alternative.State -SelectedWorker 'alternative-02' | Out-Null
+    & pwsh -NoProfile -File $coordinator -Action Consolidate -Manifest $alternative.Manifest -RunnerConfig $script:runnerConfig -State $alternative.State -RuntimeRoot $alternative.Runtime -SelectedWorker 'alternative-02' | Out-Null
     Assert-Test ($LASTEXITCODE -eq 0) 'Selected alternative consolidation failed'
 
     $pipelineRepo = Initialize-TestRepository 'pipeline-repo'
