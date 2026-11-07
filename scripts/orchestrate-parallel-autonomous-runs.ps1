@@ -266,16 +266,41 @@ function Invoke-PARProfileCommand {
     Assert-PARCondition (-not [string]::IsNullOrWhiteSpace([string] $CommandProfile.executable)) 'Profile executable fehlt.'
     Assert-PARCondition ($CommandProfile.arguments -is [object[]]) 'Profile arguments muss ein Array sein.'
     $arguments = ConvertTo-PARArgumentList @($CommandProfile.arguments) $Values
-    Push-Location -LiteralPath $WorkingDirectory
+    $outputRoot = Join-Path ([IO.Path]::GetTempPath()) "parallel-profile-$([guid]::NewGuid().ToString('N'))"
+    [void](New-Item -ItemType Directory -Path $outputRoot)
+    $processInfo = $null
     try {
-        $output = @(& ([string] $CommandProfile.executable) @arguments 2>&1)
-        $exitCode = $LASTEXITCODE
+        Push-Location -LiteralPath $WorkingDirectory
+        try {
+            $processInfo = Invoke-PARProcessAsync ([string] $CommandProfile.executable) $arguments `
+                $WorkingDirectory (Join-Path $outputRoot 'stdout.log') (Join-Path $outputRoot 'stderr.log')
+        } finally {
+            Pop-Location
+        }
+        $deadline = [DateTime]::UtcNow.AddMinutes(5)
+        while (-not $processInfo.Process.HasExited -or
+            -not $processInfo.StdoutTask.IsCompleted -or -not $processInfo.StderrTask.IsCompleted) {
+            if ($processInfo.StdoutStream.Length -gt 4MB -or $processInfo.StderrStream.Length -gt 4MB -or
+                [DateTime]::UtcNow -gt $deadline) {
+                if (-not $processInfo.Process.HasExited) { $processInfo.Process.Kill($true) }
+                throw 'Profilbefehl ueberschritt das Ausgabe- oder Zeitlimit (4 MiB je Stream, 5 Minuten).'
+            }
+            Start-Sleep -Milliseconds 100
+        }
+        [void] $processInfo.StdoutTask.GetAwaiter().GetResult()
+        [void] $processInfo.StderrTask.GetAwaiter().GetResult()
+        return @{ ExitCode = $processInfo.Process.ExitCode; Output = @() }
     } finally {
-        Pop-Location
-    }
-    return @{
-        ExitCode = $exitCode
-        Output = @($output)
+        if ($null -ne $processInfo) {
+            if (-not $processInfo.Process.HasExited) {
+                try { $processInfo.Process.Kill($true) } catch [InvalidOperationException] { }
+                [void] $processInfo.Process.WaitForExit(5000)
+            }
+            $processInfo.StdoutStream.Dispose()
+            $processInfo.StderrStream.Dispose()
+            $processInfo.Process.Dispose()
+        }
+        Remove-Item -LiteralPath $outputRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -587,6 +612,10 @@ function Test-PARFixtureExemption {
                     if (-not [IO.Path]::IsPathFullyQualified($extraValue)) { return $false }
                     $extraPath = Resolve-PARPhysicalPath $extraValue
                     if (-not $extraPath.StartsWith($prefix, $comparison)) { return $false }
+                } elseif ($extraName -eq '-OutputBytes') {
+                    $outputBytes = 0
+                    if (-not [int]::TryParse($extraValue, [ref] $outputBytes) -or
+                        $outputBytes -lt 0 -or $outputBytes -gt 20MB) { return $false }
                 } else { return $false }
             }
         }
@@ -1255,11 +1284,27 @@ function Invoke-PARProcessAsync {
     }
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $psi
-    Assert-PARCondition $process.Start() "Runner konnte nicht gestartet werden: $Executable"
+    $stdoutStream = $null
+    $stderrStream = $null
+    try {
+        $stdoutStream = [IO.FileStream]::new($StdoutPath, [IO.FileMode]::CreateNew,
+            [IO.FileAccess]::Write, [IO.FileShare]::Read)
+        $stderrStream = [IO.FileStream]::new($StderrPath, [IO.FileMode]::CreateNew,
+            [IO.FileAccess]::Write, [IO.FileShare]::Read)
+        Assert-PARCondition $process.Start() "Runner konnte nicht gestartet werden: $Executable"
+    } catch {
+        if ($null -ne $stdoutStream) { $stdoutStream.Dispose() }
+        if ($null -ne $stderrStream) { $stderrStream.Dispose() }
+        $process.Dispose()
+        throw
+    }
     return @{
         Process = $process
-        StdoutTask = $process.StandardOutput.ReadToEndAsync()
-        StderrTask = $process.StandardError.ReadToEndAsync()
+        StdoutTask = $process.StandardOutput.BaseStream.CopyToAsync($stdoutStream)
+        StderrTask = $process.StandardError.BaseStream.CopyToAsync($stderrStream)
+        StdoutStream = $stdoutStream
+        StderrStream = $stderrStream
+        StartedAt = [DateTime]::UtcNow
         StdoutPath = $StdoutPath
         StderrPath = $StderrPath
     }
@@ -1322,12 +1367,25 @@ function Complete-PARWorker {
     )
 
     $process = $RunningEntry.Process.Process
-    $stdout = $RunningEntry.Process.StdoutTask.GetAwaiter().GetResult()
-    $stderr = $RunningEntry.Process.StderrTask.GetAwaiter().GetResult()
-    $stdout | Set-Content -LiteralPath $RunningEntry.Process.StdoutPath -Encoding utf8NoBOM
-    $stderr | Set-Content -LiteralPath $RunningEntry.Process.StderrPath -Encoding utf8NoBOM
+    try {
+        [void] $RunningEntry.Process.StdoutTask.GetAwaiter().GetResult()
+        [void] $RunningEntry.Process.StderrTask.GetAwaiter().GetResult()
+        $outputExceeded = $RunningEntry.Process.StdoutStream.Length -gt 16MB -or
+            $RunningEntry.Process.StderrStream.Length -gt 16MB
+    } finally {
+        $RunningEntry.Process.StdoutStream.Dispose()
+        $RunningEntry.Process.StderrStream.Dispose()
+    }
     $WorkerState.exitCode = $process.ExitCode
     $WorkerState.processId = $null
+
+    if ($outputExceeded -or $RunningEntry.Process.ContainsKey('FailureReason')) {
+        $WorkerState.status = 'Failed'
+        $WorkerState.summary = if ($RunningEntry.Process.ContainsKey('FailureReason')) {
+            [string] $RunningEntry.Process.FailureReason
+        } else { 'Runner output limit exceeded 16 MiB per stream.' }
+        return
+    }
 
     if ($process.ExitCode -ne 0) {
         $WorkerState.status = 'Failed'
@@ -1647,7 +1705,7 @@ Do not infer remote, merge, bypass, cancellation, secret, or provider authority.
                         -WorkerId ([string] $worker.workerId) -Attempt ([int] $workerState.executionAttempt)
                 }
                 $arguments = ConvertTo-PARArgumentList @($runnerProfileData.arguments) $values
-                $processInfo = Invoke-PARProcessAsync ([string] $runnerProfileData.executable) $arguments $worktree (Join-Path $logsRoot "$($worker.workerId).out.log") (Join-Path $logsRoot "$($worker.workerId).err.log")
+                $processInfo = Invoke-PARProcessAsync ([string] $runnerProfileData.executable) $arguments $worktree (Join-Path $logsRoot "$($worker.workerId)-$attemptId.out.log") (Join-Path $logsRoot "$($worker.workerId)-$attemptId.err.log")
                 $workerState.status = 'Running'
                 $workerState.worktree = $worktree
                 $workerState.processId = $processInfo.Process.Id
@@ -1672,6 +1730,12 @@ Do not infer remote, merge, bypass, cancellation, secret, or provider authority.
             foreach ($workerId in @($running.Keys)) {
                 $entry = $running[$workerId]
                 if (-not $entry.Process.Process.HasExited) {
+                    if ($entry.Process.StdoutStream.Length -gt 16MB -or
+                        $entry.Process.StderrStream.Length -gt 16MB -or
+                        [DateTime]::UtcNow -gt $entry.Process.StartedAt.AddHours(4)) {
+                        $entry.Process.FailureReason = 'Runner exceeded the output limit (16 MiB per stream) or time limit (4 hours).'
+                        $entry.Process.Process.Kill($true)
+                    }
                     continue
                 }
                 $workerState = Get-PARWorkerState $campaignState $workerId

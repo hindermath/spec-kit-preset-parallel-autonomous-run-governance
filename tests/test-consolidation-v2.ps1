@@ -300,12 +300,12 @@ function Invoke-TestConsolidate {
     param([Parameter(Mandatory)][hashtable] $Case, [switch] $ExpectFailure, [string] $SelectedWorker = '')
 
     $selectionArgs = if ($SelectedWorker) { @('-SelectedWorker', $SelectedWorker) } else { @() }
-    & pwsh -NoProfile -File $coordinator -Action Consolidate -Manifest $Case.Manifest `
-        -RunnerConfig $Case.Runner -State $Case.State -RuntimeRoot $Case.Runtime -Merge @selectionArgs 2>$null | Out-Null
+    $consolidationOutput = @(& pwsh -NoProfile -File $coordinator -Action Consolidate -Manifest $Case.Manifest `
+        -RunnerConfig $Case.Runner -State $Case.State -RuntimeRoot $Case.Runtime -Merge @selectionArgs 2>&1)
     if ($ExpectFailure) {
         Assert-Test ($LASTEXITCODE -ne 0) "$($Case.Name) unexpectedly consolidated"
     } else {
-        Assert-Test ($LASTEXITCODE -eq 0) "$($Case.Name) consolidation failed"
+        Assert-Test ($LASTEXITCODE -eq 0) "$($Case.Name) consolidation failed: $($consolidationOutput -join ' ')"
     }
 }
 

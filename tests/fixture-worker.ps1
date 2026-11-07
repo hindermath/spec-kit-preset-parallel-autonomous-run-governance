@@ -13,6 +13,7 @@ param(
     [string] $Mode = 'Completed',
     [string] $HandoffsJson = '[]',
     [string] $HandoffSymlinkOutside = '',
+    [int] $OutputBytes = 0,
     [int] $DelayMilliseconds = 100
 )
 
@@ -104,3 +105,6 @@ if ($WriteAutonomousState) {
     handoffs = @($handoffResults)
     summary = 'Deterministic fixture completed.'
 } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $ResultFile -Encoding utf8NoBOM
+if ($OutputBytes -gt 0) {
+    [Console]::Out.Write('X' * $OutputBytes)
+}

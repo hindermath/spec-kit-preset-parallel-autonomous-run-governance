@@ -179,6 +179,10 @@ try {
         executable = 'pwsh'
         arguments = @($runnerData.profiles.fixture.arguments) + @('-ReportedAttemptId', '00000000-0000-0000-0000-000000000001')
     }
+    $runnerData.profiles['flood-output'] = [ordered]@{
+        executable = 'pwsh'
+        arguments = @($runnerData.profiles.fixture.arguments) + @('-OutputBytes', [string] (17MB))
+    }
     Write-Data $script:runnerConfig $runnerData
 
     $replicatedWorkers = 1..3 | ForEach-Object {
@@ -217,6 +221,22 @@ try {
         $staleStateData.workers[0].status -eq 'Failed' -and
         $staleStateData.workers[0].summary -match 'aktuellen Ausfuehrungsversuch') `
         'A worker result with a replayed attempt ID was accepted.'
+
+    $floodRepo = Initialize-TestRepository 'flood-output-repo'
+    $floodWorker = Get-TestWorker 'flood-output-worker' $floodRepo
+    $floodWorker.runnerProfile = 'flood-output'
+    $floodCampaign = Get-TestCampaign 'flood-output' 'IndependentFeatures' @($floodWorker)
+    $floodRoot = Join-Path $tempRoot 'flood-output'
+    [void](New-Item -ItemType Directory -Path $floodRoot)
+    $floodManifest = Join-Path $floodRoot 'campaign.json'
+    $floodState = Join-Path $floodRoot 'state.json'
+    Write-Data $floodManifest $floodCampaign
+    & pwsh -NoProfile -File $coordinator -Action Start -Manifest $floodManifest `
+        -RunnerConfig $script:runnerConfig -State $floodState -RuntimeRoot (Join-Path $floodRoot 'runtime') | Out-Null
+    $floodStateData = Get-Content -LiteralPath $floodState -Raw | ConvertFrom-Json
+    Assert-Test ($floodStateData.status -eq 'Failed' -and
+        $floodStateData.workers[0].summary -match 'output limit') `
+        "A worker exceeded the log quota without being blocked: $($floodStateData.status), $($floodStateData.workers[0].summary)"
 
     $alternativeRepo = Initialize-TestRepository 'alternative-repo'
     $alternativeWorkers = 1..3 | ForEach-Object { Get-TestWorker "alternative-0$_" $alternativeRepo }

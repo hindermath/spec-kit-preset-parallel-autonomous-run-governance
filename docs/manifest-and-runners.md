@@ -161,6 +161,8 @@ erteilt keine pauschale Netzwerk- oder Schreibberechtigung.
 `RuntimeRoot` enthaelt Worktrees, Locks, Logs und Prozessresultate. Dieser
 Bereich bleibt ausserhalb versionierter Feature-Artefakte. Der normale Checkout
 wird weder gewechselt noch zurueckgesetzt.
+Runner-Logs werden direkt in Dateien gestreamt. Je Stream gelten 16 MiB und
+vier Stunden Laufzeit; Profilbefehle haben 4 MiB je Stream und fünf Minuten.
 
 Ein GitHub-Merge-Profil mit `gh` muss `--match-head-commit {headSha}` setzen.
 Der Provider weist damit einen Merge ab, wenn sich der PR-Head nach dem
@@ -202,6 +204,8 @@ optional status metadata and never guess another agent's configuration.
 
 `RuntimeRoot` contains worktrees, locks, logs, and process results outside
 tracked feature artifacts. The normal checkout is never switched or reset.
+Runner logs stream directly to files, capped at 16 MiB per stream and four
+hours. Profile commands are capped at 4 MiB per stream and five minutes.
 
 A GitHub merge profile using `gh` must pass `--match-head-commit {headSha}`.
 The provider then rejects a merge if the PR head changed after preflight.
