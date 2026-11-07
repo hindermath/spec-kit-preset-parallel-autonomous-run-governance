@@ -307,6 +307,22 @@ try {
     & pwsh -NoProfile -File $coordinator -Action Validate -Manifest $legacyMergePath -RunnerConfig $script:runnerConfig | Out-Null
     Assert-Test ($LASTEXITCODE -eq 0) 'Schema 1.0 MergeAndSync manifest without mergeProfile was not readable'
 
+    $unapprovedMergeState = Join-Path $tempRoot 'unapproved-merge-state.json'
+    Write-Data $unapprovedMergeState ([ordered]@{
+        campaignId = $legacyMergeCampaign.campaignId
+        status = 'ReadyForConsolidation'
+        phase = 'Consolidation'
+    })
+    $unapprovedBefore = Get-Content -LiteralPath $unapprovedMergeState -Raw
+    $unapprovedOutput = @(& pwsh -NoProfile -File $coordinator -Action Resume -Manifest $legacyMergePath `
+        -RunnerConfig $script:runnerConfig -State $unapprovedMergeState 2>&1)
+    Assert-Test ($LASTEXITCODE -ne 0) 'Resume entered merge consolidation without explicit -Merge'
+    Assert-Test ((($unapprovedOutput -join ' ') -match 'erfordert ein ausdrueckliches') -and
+        (($unapprovedOutput -join ' ') -match '-Merge')) `
+        "Rejected Resume did not report the explicit merge authorization boundary: $($unapprovedOutput -join ' ')"
+    Assert-Test ((Get-Content -LiteralPath $unapprovedMergeState -Raw) -ceq $unapprovedBefore) `
+        'Rejected Resume changed merge state'
+
     $stopRepo = Initialize-TestRepository 'stop-resume-repo'
     $stopWorkers = 1..3 | ForEach-Object { Get-TestWorker "stop-0$_" $stopRepo }
     $stopCampaign = Get-TestCampaign 'stop-resume' 'IndependentFeatures' $stopWorkers

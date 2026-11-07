@@ -31,7 +31,7 @@
     Menschlich ausgewaehlter Worker fuer AlternativeSolutions.
 
 .PARAMETER Merge
-    Fuehrt bei Consolidate die konfigurierte Merge-Command aus.
+    Autorisiert bei Consolidate oder Resume die konfigurierte Merge-Command.
 
 .PARAMETER OutputFormat
     Ausgabeformat fuer Status: Json oder barrierearmer Text.
@@ -2066,6 +2066,7 @@ switch ($Action) {
                 [string] $resumeState.phase -eq 'ConsolidationPaused')
         )
         if ($resumeConsolidation) {
+            Assert-PARCondition $Merge 'Resume einer MergeAndSync-Konsolidierung erfordert ein ausdrueckliches -Merge.'
             Invoke-PARConsolidate $campaign $profiles $manifestPath $statePath $manifestDirectory $runtimePath `
                 $SelectedWorker -DoMerge -IsResume
         } else {
