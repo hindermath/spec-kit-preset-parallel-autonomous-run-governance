@@ -331,16 +331,31 @@ try {
     & git -C $repository add README.md
     & git -C $repository commit -m 'test: change reviewed input' | Out-Null
     $currentInputHash = (Get-FileHash -LiteralPath (Join-Path $repository 'README.md') -Algorithm SHA256).Hash.ToLowerInvariant()
+    Copy-Item -LiteralPath (Join-Path $repository 'README.md') -Destination (Join-Path $tempRoot 'reviewed-input.md')
+    $reviewId = [Guid]::NewGuid().ToString()
+    $reviewRequest = Join-Path $tempRoot 'review-request.json'
+    Write-DependencyJson $reviewRequest ([ordered]@{
+        schemaVersion = '1.0'; reviewId = $reviewId; mode = 'Campaign'; policy = 'fixture-policy'
+        targets = @([ordered]@{ path = 'reviewed-input.md'; role = 'UniqueCampaignIntake' })
+    })
     $reviewPath = Join-Path $tempRoot 'review-result.json'
     Write-DependencyJson $reviewPath ([ordered]@{
-        schemaVersion = '1.0'; mode = 'Campaign'; status = 'Ready'
+        schemaVersion = '1.0'; reviewId = $reviewId; mode = 'Campaign'; status = 'Ready'
+        policy = 'fixture-policy'; reviewedAt = [DateTime]::UtcNow.ToString('o')
+        repository = [ordered]@{ root = '.'; head = 'N/A' }
+        requestEvidence = [ordered]@{
+            path = 'review-request.json'
+            normalizedSha256 = (Get-FileHash -LiteralPath $reviewRequest -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
         questions = @(); findings = @(); acceptedRisks = @()
-        targets = @([ordered]@{ path = 'README.md'; normalizedSha256 = $currentInputHash })
+        targets = @([ordered]@{ path = 'reviewed-input.md'; role = 'UniqueCampaignIntake'; normalizedSha256 = $currentInputHash; gitBlob = 'N/A' })
         coverage = [ordered]@{
-            workers = @([ordered]@{ workerId = $workerId; targetPath = 'README.md'; applicability = 'Applicable' })
+            individual = @('reviewed-input.md')
+            workers = @([ordered]@{ workerId = $workerId; targetPath = 'reviewed-input.md'; applicability = 'Applicable' })
             series = @()
         }
-        operatorExceptions = @()
+        operatorExceptions = @(); summary = [ordered]@{ critical = 0; high = 0; medium = 0; low = 0 }
+        supersedes = 'N/A'
     })
     $campaign.schemaVersion = '1.2'
     $campaign.campaignId = [Guid]::NewGuid().ToString()
@@ -349,6 +364,15 @@ try {
     $campaign.workers[0].baseRef = $baseWithOldInput
     $campaign.workers[0].branch = 'parallel/dependency/reviewed-input'
     Write-DependencyJson $manifest $campaign
+    $reviewFixture = Get-Content -LiteralPath $reviewPath -Raw | ConvertFrom-Json -AsHashtable
+    $reviewFixture.coverage.individual = @()
+    Write-DependencyJson $reviewPath $reviewFixture
+    $incompleteReview = Invoke-DependencyValidation $manifest $runnerConfig
+    Assert-DependencyTest ($incompleteReview.ExitCode -ne 0 -and
+        ($incompleteReview.Output -join ' ') -match 'coverage.individual') `
+        'Incomplete individual intake coverage passed campaign validation.'
+    $reviewFixture.coverage.individual = @('reviewed-input.md')
+    Write-DependencyJson $reviewPath $reviewFixture
     $reviewSource = Invoke-DependencyValidation $manifest $runnerConfig
     Assert-DependencyTest ($reviewSource.ExitCode -eq 0) `
         "Source review fixture failed validation: $($reviewSource.Output)"

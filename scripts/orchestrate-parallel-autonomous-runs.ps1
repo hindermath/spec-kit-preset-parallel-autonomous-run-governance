@@ -729,7 +729,25 @@ function Test-PARIntakeReview {
         'intakeReview.resultPath muss unterhalb des Manifestverzeichnisses liegen.'
     Assert-PARCondition (Test-Path -LiteralPath $resultPath -PathType Leaf) `
         "Intake-Review-Ergebnis fehlt: $resultPath"
+    $physicalManifest = Resolve-PARPhysicalPath $ManifestDirectory
+    $physicalResult = Resolve-PARPhysicalPath $resultPath
+    $physicalPrefix = $physicalManifest.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    Assert-PARCondition $physicalResult.StartsWith($physicalPrefix, $comparison) `
+        'Intake-Review-Ergebnis verlaesst das Manifestverzeichnis.'
     $result = Read-PARJson $resultPath
+    Assert-PARCondition ($result.requestEvidence -is [hashtable] -and
+        -not [string]::IsNullOrWhiteSpace([string] $result.requestEvidence.path)) `
+        'Campaign-Review benoetigt eine gebundene Review-Anfrage.'
+    $validatorCandidates = @(
+        (Join-Path $PSScriptRoot '../../intake-review-governance/scripts/validate-intake-review-result.ps1'),
+        (Join-Path $PSScriptRoot '../../spec-kit-preset-intake-review-governance/scripts/validate-intake-review-result.ps1')
+    )
+    $validator = @($validatorCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1)
+    Assert-PARCondition ($validator.Count -eq 1) 'Installierter Intake-Review-Validator fehlt.'
+    $validationOutput = @(& pwsh -NoProfile -File $validator[0] -Result $resultPath -Repo $ManifestDirectory 2>&1)
+    Assert-PARCondition ($LASTEXITCODE -eq 0) `
+        "Intake-Review-Validator blockiert Kampagne: $($validationOutput -join ' ')"
     Assert-PARCondition ([string] $result.schemaVersion -eq '1.0') `
         'Intake-Review-Ergebnis benoetigt Schema 1.0.'
     Assert-PARCondition ([string] $result.mode -eq 'Campaign') `

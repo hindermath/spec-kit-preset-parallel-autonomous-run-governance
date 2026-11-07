@@ -13,11 +13,15 @@ Bei aktiver Pflicht muss das Ergebnis vor der Worktree-Erstellung aktuell
 sein. Jedes eindeutige Intake wird einmal semantisch geprüft; jeder Worker
 erhält trotzdem eine eigene Applicability-Zeile. Review und Manifest müssen
 DAG-Kanten und Ausnahmen mit Autor, Grund, Datum, Ablauf und Workern abgleichen.
+Ein Campaign-Review benötigt eine gebundene Anfrage; der installierte
+Intake-Review-Validator prüft das vollständige Ergebnis vor jedem Start und Resume.
 
 When required, the result must be current before worktree creation. Review
 each unique intake once, retain one applicability row per worker, reproduce the
 manifest DAG, and separately govern operator exceptions. Resume revalidates
 the stored result hash.
+A campaign review needs a bound request; the installed intake-review validator
+checks the complete result before every start and resume.
 
 Vor jedem Worker-Start werden die wirksamen `featureInput`-Bytes und die
 Autonomous-Preset-Version im tatsächlichen Worktree erneut geprüft. Auch ein
