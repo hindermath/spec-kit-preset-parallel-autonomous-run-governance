@@ -165,6 +165,14 @@ try {
     }
     Write-Data $script:runnerConfig $runnerData
 
+    $outsideHandoff = Join-Path $tempRoot 'outside-handoff.json'
+    '{"fixture":"external"}' | Set-Content -LiteralPath $outsideHandoff -Encoding utf8NoBOM
+    $runnerData.profiles['symlink-handoff'] = [ordered]@{
+        executable = 'pwsh'
+        arguments = @($runnerData.profiles.fixture.arguments) + @('-HandoffSymlinkOutside', $outsideHandoff)
+    }
+    Write-Data $script:runnerConfig $runnerData
+
     $replicatedWorkers = 1..3 | ForEach-Object {
         Get-TestWorker "replicated-0$_" (Initialize-TestRepository "replicated-repo-0$_")
     }
@@ -234,6 +242,26 @@ try {
     Write-Data $invalidPath $invalid
     & pwsh -NoProfile -File $coordinator -Action Validate -Manifest $invalidPath -RunnerConfig $script:runnerConfig 2>$null
     Assert-Test ($LASTEXITCODE -ne 0) 'DAG cycle was accepted'
+
+    $linkedHandoff = Get-TestCampaign 'linked-handoff' 'Pipeline' @(
+        (Get-TestWorker 'linked-producer' (Initialize-TestRepository 'linked-handoff-repo')),
+        (Get-TestWorker 'linked-consumer' (Join-Path $tempRoot 'linked-handoff-repo') @('linked-producer'))
+    )
+    $linkedHandoff.workers[0].handoffs = @([ordered]@{
+        consumerWorkerId = 'linked-consumer'; path = 'handoffs/linked.json'
+    })
+    $linkedHandoff.workers[0].runnerProfile = 'symlink-handoff'
+    $linkedPath = Join-Path $tempRoot 'linked-handoff.json'
+    Write-Data $linkedPath $linkedHandoff
+    $linkedOutput = & pwsh -NoProfile -File $coordinator -Action Start -Manifest $linkedPath `
+        -RunnerConfig $script:runnerConfig -State (Join-Path $tempRoot 'linked-handoff-state.json') `
+        -RuntimeRoot (Join-Path $tempRoot 'linked-handoff-runtime') 2>&1
+    $linkedState = Get-Content (Join-Path $tempRoot 'linked-handoff-state.json') -Raw | ConvertFrom-Json
+    $linkedWorker = @($linkedState.workers | Where-Object workerId -eq 'linked-producer')[0]
+    Assert-Test ($linkedState.status -eq 'Failed' -and $linkedWorker.status -eq 'Failed') `
+        "External handoff symlink was accepted: $($linkedOutput -join ' | ')"
+    Assert-Test ([string]$linkedWorker.summary -match 'Handoff enthaelt Symlink') `
+        "External handoff symlink failed for an unrelated reason: $($linkedWorker.summary)"
 
     $invalidBaseWorker = Get-TestCampaign 'invalid-base-worker' 'Pipeline' @(
         (Get-TestWorker 'base-a' $pipelineRepo),

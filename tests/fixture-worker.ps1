@@ -9,6 +9,7 @@ param(
     [ValidateSet('Completed', 'ReadyForMerge', 'Failed')]
     [string] $Mode = 'Completed',
     [string] $HandoffsJson = '[]',
+    [string] $HandoffSymlinkOutside = '',
     [int] $DelayMilliseconds = 100
 )
 
@@ -42,6 +43,10 @@ foreach ($handoff in $handoffDeclarations) {
         consumer = [string] $handoff.consumerWorkerId
         campaignId = $CampaignId
     } | ConvertTo-Json | Set-Content -LiteralPath $handoffPath -Encoding utf8NoBOM
+    if ($HandoffSymlinkOutside) {
+        Remove-Item -LiteralPath $handoffPath -Force
+        [void](New-Item -ItemType SymbolicLink -Path $handoffPath -Target $HandoffSymlinkOutside)
+    }
     & git -C $Worktree add -- ([string] $handoff.path)
     if ($LASTEXITCODE -ne 0) {
         throw "git add failed for handoff '$($handoff.path)'"

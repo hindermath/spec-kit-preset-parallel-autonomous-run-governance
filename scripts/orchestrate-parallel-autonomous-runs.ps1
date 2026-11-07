@@ -327,6 +327,33 @@ function Resolve-PARFeatureInput {
     return $path
 }
 
+function Resolve-PARHandoffPath {
+    param(
+        [Parameter(Mandatory)][string] $Worktree,
+        [Parameter(Mandatory)][string] $Relative
+    )
+
+    Assert-PARCondition (-not [string]::IsNullOrWhiteSpace($Relative) -and
+        -not [IO.Path]::IsPathRooted($Relative) -and $Relative -notmatch '\\' -and
+        $Relative -notmatch '(^|/)\.\.?(/|$)') 'Handoff-Pfad muss worktree-relativ sein.'
+    $root = Resolve-PARPhysicalPath $Worktree
+    $candidate = [IO.Path]::GetFullPath((Join-Path $root $Relative))
+    $prefix = $root.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    Assert-PARCondition ($candidate.StartsWith($prefix, $comparison)) "Handoff verlaesst den Worker-Worktree: $Relative"
+    $current = $root
+    foreach ($segment in $Relative.Split('/')) {
+        $current = Join-Path $current $segment
+        $entry = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+        Assert-PARCondition (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) `
+            "Handoff enthaelt Symlink oder Reparse Point: $Relative"
+    }
+    $file = Get-Item -LiteralPath $candidate -Force -ErrorAction Stop
+    Assert-PARCondition (-not $file.PSIsContainer -and $file.Length -le 8MB) `
+        "Handoff fehlt oder ueberschreitet 8 MiB: $Relative"
+    return $candidate
+}
+
 function Get-PARRunnerProfileName {
     param(
         [Parameter(Mandatory)][hashtable] $Campaign,
@@ -1081,14 +1108,7 @@ function Complete-PARWorker {
         $derivedStatus = if ($Campaign.deliveryMode -eq 'LocalImplementation') { 'Completed' } else { 'ReadyForMerge' }
         $derivedHandoffs = @()
         foreach ($declaredHandoff in @($Worker.handoffs)) {
-            $handoffPath = [IO.Path]::GetFullPath((Join-Path $RunningEntry.Worktree ([string] $declaredHandoff.path)))
-            $worktreePrefix = [IO.Path]::GetFullPath($RunningEntry.Worktree).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
-            if (-not $handoffPath.StartsWith($worktreePrefix, [StringComparison]::Ordinal) -or
-                -not (Test-Path -LiteralPath $handoffPath -PathType Leaf)) {
-                $WorkerState.status = 'Failed'
-                $WorkerState.summary = "Runner succeeded but did not produce declared handoff '$($declaredHandoff.path)'."
-                return
-            }
+            $handoffPath = Resolve-PARHandoffPath $RunningEntry.Worktree ([string] $declaredHandoff.path)
             $derivedHandoffs += [ordered]@{
                 consumerWorkerId = [string] $declaredHandoff.consumerWorkerId
                 path = [string] $declaredHandoff.path
@@ -1131,10 +1151,7 @@ function Complete-PARWorker {
             $_.consumerWorkerId -eq $declaredHandoff.consumerWorkerId -and $_.path -eq $declaredHandoff.path
         })
         Assert-PARCondition ($resultHandoffs.Count -eq 1) "Worker '$($Worker.workerId)' lieferte den deklarierten Handoff zu '$($declaredHandoff.consumerWorkerId)' nicht eindeutig."
-        $handoffPath = [IO.Path]::GetFullPath((Join-Path $RunningEntry.Worktree ([string] $declaredHandoff.path)))
-        $worktreePrefix = [IO.Path]::GetFullPath($RunningEntry.Worktree).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
-        Assert-PARCondition ($handoffPath.StartsWith($worktreePrefix, [StringComparison]::Ordinal)) "Handoff verlaesst den Worker-Worktree: $handoffPath"
-        Assert-PARCondition (Test-Path -LiteralPath $handoffPath -PathType Leaf) "Handoff-Datei fehlt: $handoffPath"
+        $handoffPath = Resolve-PARHandoffPath $RunningEntry.Worktree ([string] $declaredHandoff.path)
         $actualHash = Get-PARSha256 $handoffPath
         Assert-PARCondition ($resultHandoffs[0].sha256 -eq $actualHash) "Handoff-Hash stimmt nicht: $handoffPath"
         $validatedHandoffs += [ordered]@{
@@ -1232,24 +1249,33 @@ function Invoke-PARStart {
                 if (@($dependencyStates | Where-Object { $_ -notin @('Completed', 'ReadyForMerge', 'Merged') }).Count -gt 0) {
                     continue
                 }
+                if ([bool] $campaignState.stopRequested -or $running.Count -ge [int] $Campaign.maxConcurrency) {
+                    continue
+                }
                 $incomingHandoffs = @()
                 foreach ($dependency in @($worker.dependsOn)) {
                     $dependencyState = Get-PARWorkerState $campaignState ([string] $dependency)
                     $matchingHandoffs = @($dependencyState.handoffs | Where-Object { $_.consumerWorkerId -eq $worker.workerId })
                     Assert-PARCondition ($matchingHandoffs.Count -eq 1) "Validierter Handoff '$dependency' -> '$($worker.workerId)' fehlt."
-                    $handoffSource = [string] $matchingHandoffs[0].sourcePath
-                    Assert-PARCondition (Test-Path -LiteralPath $handoffSource -PathType Leaf) "Handoff-Quelle fehlt: $handoffSource"
+                    $handoffSource = Resolve-PARHandoffPath ([string] $dependencyState.worktree) ([string] $matchingHandoffs[0].path)
+                    Assert-PARCondition ($handoffSource -eq [string] $matchingHandoffs[0].sourcePath) `
+                        "Handoff-Quelle wurde nach Validierung umgeleitet: $handoffSource"
                     Assert-PARCondition ((Get-PARSha256 $handoffSource) -eq $matchingHandoffs[0].sha256) "Handoff-Quelle wurde nach Validierung veraendert: $handoffSource"
+                    $runtimePhysical = Resolve-PARPhysicalPath $RuntimePath
+                    $verifiedRoot = Join-Path $runtimePhysical "verified-handoffs-$([guid]::NewGuid().ToString('N'))"
+                    [void](New-Item -ItemType Directory -Path $verifiedRoot -ErrorAction Stop)
+                    Assert-PARCondition (((Get-Item -LiteralPath $verifiedRoot -Force).Attributes -band
+                        [IO.FileAttributes]::ReparsePoint) -eq 0) 'Verifizierter Handoff-Ordner ist umgeleitet.'
+                    $verifiedPath = Join-Path $verifiedRoot 'handoff.bin'
+                    [IO.File]::Copy($handoffSource, $verifiedPath, $false)
+                    Assert-PARCondition ((Get-PARSha256 $verifiedPath) -eq $matchingHandoffs[0].sha256) `
+                        "Handoff-Kopie stimmt nicht mit dem validierten Hash ueberein: $handoffSource"
                     $incomingHandoffs += [ordered]@{
                         producerWorkerId = [string] $dependency
-                        sourcePath = $handoffSource
+                        sourcePath = $verifiedPath
                         sha256 = [string] $matchingHandoffs[0].sha256
                     }
                 }
-                if ([bool] $campaignState.stopRequested -or $running.Count -ge [int] $Campaign.maxConcurrency) {
-                    continue
-                }
-
                 $runnerProfileName = Get-PARRunnerProfileName $Campaign $worker
                 $runnerProfileData = $Profiles.profiles[$runnerProfileName]
                 $repository = Resolve-PARRepository ([string] $worker.repository) $ManifestDirectory
