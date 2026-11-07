@@ -265,6 +265,39 @@ try {
         -RunnerConfig $script:runnerConfig 2>$null
     Assert-Test ($LASTEXITCODE -ne 0) 'Missing campaign fallback profile was accepted'
 
+    $retiredNative = Get-TestCampaign 'retired-native' 'ReplicatedTargets' @(
+        (Get-TestWorker 'retired-a' $pipelineRepo)
+    )
+    $retiredNative.runnerProfile = 'native-codex-field'
+    $retiredNativePath = Join-Path $tempRoot 'retired-native.json'
+    Write-Data $retiredNativePath $retiredNative
+    & pwsh -NoProfile -File $coordinator -Action Start -Manifest $retiredNativePath `
+        -RunnerConfig $script:runnerConfig 2>$null
+    Assert-Test ($LASTEXITCODE -ne 0) 'Saved native field profile was accepted by coordinator'
+
+    $retiredAdmin = Get-TestCampaign 'retired-admin' 'ReplicatedTargets' @(
+        (Get-TestWorker 'retired-b' $pipelineRepo)
+    )
+    $retiredAdmin.consolidation.mergeProfile = 'github-owner-development'
+    $retiredAdminPath = Join-Path $tempRoot 'retired-admin.json'
+    Write-Data $retiredAdminPath $retiredAdmin
+    & pwsh -NoProfile -File $coordinator -Action Start -Manifest $retiredAdminPath `
+        -RunnerConfig $script:runnerConfig 2>$null
+    Assert-Test ($LASTEXITCODE -ne 0) 'Saved admin merge profile was accepted by coordinator'
+
+    $renamedUnsafe = Get-TestCampaign 'renamed-unsafe' 'ReplicatedTargets' @(
+        (Get-TestWorker 'renamed-a' $pipelineRepo)
+    )
+    $renamedUnsafePath = Join-Path $tempRoot 'renamed-unsafe.json'
+    Write-Data $renamedUnsafePath $renamedUnsafe
+    $unsafeRunners = Get-Content -LiteralPath $script:runnerConfig -Raw | ConvertFrom-Json -AsHashtable
+    $unsafeRunners.profiles.fixture.arguments += '--sandbox=danger-full-access'
+    $unsafeRunnerPath = Join-Path $tempRoot 'renamed-unsafe-runners.json'
+    Write-Data $unsafeRunnerPath $unsafeRunners
+    & pwsh -NoProfile -File $coordinator -Action Start -Manifest $renamedUnsafePath `
+        -RunnerConfig $unsafeRunnerPath 2>$null
+    Assert-Test ($LASTEXITCODE -ne 0) 'Renamed native bypass command was accepted by coordinator'
+
     $legacyMergeCampaign = Get-TestCampaign 'legacy-merge-read' 'ReplicatedTargets' @(
         (Get-TestWorker 'legacy-merge-a' $pipelineRepo)
     ) -DeliveryMode 'MergeAndSync'

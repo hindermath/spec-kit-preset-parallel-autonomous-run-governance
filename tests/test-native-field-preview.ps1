@@ -18,7 +18,8 @@ try {
         $arguments = @('-NoProfile', '-File', $wrapper, '-Action', $action, '-OutputRoot', $root, '-WhatIf')
         if ($action -eq 'Consolidate') { $arguments += '-Merge' }
         $output = @(& pwsh @arguments 2>&1)
-        if ($LASTEXITCODE -ne 0 -or -not ($output -match "Preview: $action would invoke")) {
+        $expected = if ($action -eq 'Stop') { "Preview: $action would invoke" } else { "Preview: $action is blocked" }
+        if ($LASTEXITCODE -ne 0 -or -not ($output -match $expected)) {
             throw "-WhatIf did not stop $action before child dispatch: $($output -join ' ')"
         }
         if ((Test-Path -LiteralPath (Join-Path $root 'parallel-campaign-state.json')) -or
@@ -26,7 +27,19 @@ try {
             throw "-WhatIf wrote campaign state for $action."
         }
     }
-    Write-Output 'PASS: all mutating field actions stop before coordinator dispatch under -WhatIf.'
+    foreach ($action in @('Prepare', 'Start', 'Resume', 'Consolidate')) {
+        $arguments = @('-NoProfile', '-File', $wrapper, '-Action', $action, '-OutputRoot', $root)
+        if ($action -eq 'Consolidate') { $arguments += '-Merge' }
+        $output = @(& pwsh @arguments 2>&1)
+        if ($LASTEXITCODE -eq 0 -or -not ($output -match 'is retired')) {
+            throw "Historical native action was not blocked: $action $($output -join ' ')"
+        }
+    }
+    $output = @(& pwsh -NoProfile -File $wrapper -Action Consolidate -OutputRoot $root 2>&1)
+    if ($LASTEXITCODE -eq 0 -or -not ($output -match 'is retired')) {
+        throw 'Historical non-merge consolidation was not blocked.'
+    }
+    Write-Output 'PASS: preview stops before dispatch and retired native actions are blocked.'
 } finally {
     if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
 }

@@ -2012,6 +2012,35 @@ $runnerConfigPath = [IO.Path]::GetFullPath($RunnerConfig)
 $profiles = Read-PARJson $runnerConfigPath
 Assert-PARSchemaVersion $profiles 'RunnerConfig'
 
+# Historical field profile names carried an expired native-agent/admin exception.
+# Reject their saved artifacts at the shared entry point, not only in the wrapper.
+if ($Action -ne 'Validate') {
+    $retiredRunner = 'native-codex-field'
+    $retiredMerge = 'github-owner-development'
+    function Assert-PARRetiredProfileCommand {
+        param($Value)
+        if ($Value -is [string]) {
+            Assert-PARCondition ($Value -cnotmatch '(?<![a-z0-9-])(danger-full-access|--dangerously-bypass-approvals-and-sandbox|--admin)(?![a-z0-9-])') `
+                'Historischer nativer Sandbox-Bypass oder Admin-Merge-Befehl ist gesperrt.'
+        } elseif ($Value -is [System.Collections.IDictionary]) {
+            foreach ($item in $Value.Values) { Assert-PARRetiredProfileCommand $item }
+        } elseif ($Value -is [System.Collections.IEnumerable]) {
+            foreach ($item in $Value) { Assert-PARRetiredProfileCommand $item }
+        }
+    }
+    Assert-PARRetiredProfileCommand $profiles
+    Assert-PARCondition ([string] $campaign.runnerProfile -cne $retiredRunner) 'Historisches natives Runner-Profil ist gesperrt.'
+    foreach ($worker in @($campaign.workers)) {
+        if ($worker.ContainsKey('runnerProfile')) {
+            Assert-PARCondition ([string] $worker.runnerProfile -cne $retiredRunner) 'Historisches natives Runner-Profil ist gesperrt.'
+        }
+    }
+    if ($campaign.ContainsKey('consolidation') -and $campaign.consolidation -is [hashtable] -and
+        $campaign.consolidation.ContainsKey('mergeProfile')) {
+        Assert-PARCondition ([string] $campaign.consolidation.mergeProfile -cne $retiredMerge) 'Historisches Admin-Merge-Profil ist gesperrt.'
+    }
+}
+
 $skipClean = $Action -in @('Resume', 'Consolidate')
 Test-PARCampaign $campaign $profiles $manifestDirectory -SkipCleanCheck:$skipClean
 
