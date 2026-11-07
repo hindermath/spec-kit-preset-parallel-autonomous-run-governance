@@ -19,6 +19,14 @@ each unique intake once, retain one applicability row per worker, reproduce the
 manifest DAG, and separately govern operator exceptions. Resume revalidates
 the stored result hash.
 
+Vor jedem Worker-Start werden die wirksamen `featureInput`-Bytes und die
+Autonomous-Preset-Version im tatsächlichen Worktree erneut geprüft. Auch ein
+Worktree aus einem älteren Vorgänger-Commit muss dieselben Gates erfüllen.
+
+Before each worker starts, the effective `featureInput` bytes and Autonomous
+preset version are checked again in its actual worktree. A worktree based on
+an older predecessor commit must pass the same gates.
+
 [Handbuch / Manual](README.md) | [Lebenszyklus / Lifecycle](lifecycle-and-operations.md)
 
 ## Kampagnenarchitektur / Campaign architecture

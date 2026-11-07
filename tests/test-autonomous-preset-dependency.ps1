@@ -42,19 +42,32 @@ function Set-AutonomousRegistry {
         [Parameter(Mandatory)][bool] $Enabled
     )
 
+    $presetPath = Join-Path $Repository '.specify/presets/autonomous-run-governance'
+    $manifestPath = Join-Path $presetPath 'preset.yml'
+    [void](New-Item -ItemType Directory -Path $presetPath -Force)
+    $manifestText = "preset:`n  version: `"$Version`"`nprovides:`n  templates:`n    - type: `"command`"`n      file: `"commands/speckit.autonomous.md`"`n"
+    $manifestText | Set-Content -LiteralPath $manifestPath -Encoding utf8NoBOM
+    foreach ($relative in @('commands/speckit.autonomous.md', 'scripts/validate-autonomous-run-state.ps1',
+            'scripts/validate-autonomous-run-state.sh', 'scripts/autonomous-evidence-core.py')) {
+        $file = Join-Path $presetPath $relative
+        [void](New-Item -ItemType Directory -Path (Split-Path -Parent $file) -Force)
+        'fixture payload' | Set-Content -LiteralPath $file -Encoding utf8NoBOM
+    }
+    $manifestHash = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $registry = [ordered]@{
         schema_version = '1.0'
         presets = [ordered]@{
             'autonomous-run-governance' = [ordered]@{
                 version = $Version
                 enabled = $Enabled
+                manifest_hash = "sha256:$manifestHash"
                 priority = 70
             }
         }
     }
     $registryPath = Join-Path $Repository '.specify/presets/.registry'
     Write-DependencyJson $registryPath $registry
-    & git -C $Repository add .specify/presets/.registry
+    & git -C $Repository add .specify/presets
     & git -C $Repository commit -m "test: autonomous preset $Version enabled=$Enabled" |
         Out-Null
 }
@@ -85,6 +98,7 @@ try {
         Set-Content -LiteralPath (Join-Path $repository 'README.md') -Encoding utf8NoBOM
     & git -C $repository add README.md
     & git -C $repository commit -m 'test: baseline' | Out-Null
+    $baselineWithoutPreset = (& git -C $repository rev-parse HEAD).Trim()
 
     $runnerConfig = Join-Path $tempRoot 'runners.json'
     Write-DependencyJson $runnerConfig ([ordered]@{
@@ -158,10 +172,92 @@ try {
     Assert-DependencyTest ($minimum.ExitCode -eq 0) `
         "Minimum supported autonomous preset failed validation: $($minimum.Output)"
 
-    Set-AutonomousRegistry $repository '0.3.2' $true
+    Set-AutonomousRegistry $repository '0.4.10' $true
     $current = Invoke-DependencyValidation $manifest $runnerConfig
     Assert-DependencyTest ($current.ExitCode -eq 0) `
         "Current autonomous preset failed validation: $($current.Output)"
+
+    $campaign = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json -AsHashtable
+    $campaign.workers[0].baseRef = $baselineWithoutPreset
+    Write-DependencyJson $manifest $campaign
+    $checkoutState = Join-Path $tempRoot 'checkout-state.json'
+    $checkoutRuntime = Join-Path $tempRoot 'checkout-runtime'
+    $checkoutOutput = @(& pwsh -NoProfile -File $coordinator -Action Start -Manifest $manifest `
+        -RunnerConfig $runnerConfig -State $checkoutState -RuntimeRoot $checkoutRuntime 2>&1)
+    Assert-DependencyTest ($LASTEXITCODE -ne 0 -and
+        ($checkoutOutput -join [Environment]::NewLine) -match 'Worker-Checkout') `
+        'A source-valid but preset-free worker checkout was accepted.'
+
+    $corePath = Join-Path $repository '.specify/presets/autonomous-run-governance/scripts/autonomous-evidence-core.py'
+    Remove-Item -LiteralPath $corePath
+    & git -C $repository add -u
+    & git -C $repository commit -m 'test: missing autonomous core payload' | Out-Null
+    $baseWithoutPayload = (& git -C $repository rev-parse HEAD).Trim()
+    Set-AutonomousRegistry $repository '0.4.10' $true
+    $campaign.workers[0].baseRef = $baseWithoutPayload
+    $campaign.workers[0].branch = 'parallel/dependency/missing-payload'
+    Write-DependencyJson $manifest $campaign
+    $payloadOutput = @(& pwsh -NoProfile -File $coordinator -Action Start -Manifest $manifest `
+        -RunnerConfig $runnerConfig -State (Join-Path $tempRoot 'payload-state.json') `
+        -RuntimeRoot (Join-Path $tempRoot 'payload-runtime') 2>&1)
+    Assert-DependencyTest ($LASTEXITCODE -ne 0 -and
+        ($payloadOutput -join [Environment]::NewLine) -match 'Worker-Checkout') `
+        'A worker checkout with registry metadata but missing payload was accepted.'
+
+    $presetDirectory = Join-Path $repository '.specify/presets/autonomous-run-governance'
+    $externalPreset = Join-Path $tempRoot 'external-autonomous-preset'
+    Move-Item -LiteralPath $presetDirectory -Destination $externalPreset
+    [void](New-Item -ItemType SymbolicLink -Path $presetDirectory -Target $externalPreset)
+    & git -C $repository add -A .specify/presets
+    & git -C $repository commit -m 'test: linked autonomous preset outside checkout' | Out-Null
+    $baseWithExternalPreset = (& git -C $repository rev-parse HEAD).Trim()
+    Remove-Item -LiteralPath $presetDirectory -Force
+    Copy-Item -LiteralPath $externalPreset -Destination $presetDirectory -Recurse
+    & git -C $repository add -A .specify/presets
+    & git -C $repository commit -m 'test: restore local autonomous preset' | Out-Null
+    $campaign.workers[0].baseRef = $baseWithExternalPreset
+    $campaign.workers[0].branch = 'parallel/dependency/linked-preset'
+    Write-DependencyJson $manifest $campaign
+    $linkedOutput = @(& pwsh -NoProfile -File $coordinator -Action Start -Manifest $manifest `
+        -RunnerConfig $runnerConfig -State (Join-Path $tempRoot 'linked-state.json') `
+        -RuntimeRoot (Join-Path $tempRoot 'linked-runtime') 2>&1)
+    Assert-DependencyTest ($LASTEXITCODE -ne 0 -and
+        ($linkedOutput -join [Environment]::NewLine) -match 'Worker-Checkout') `
+        'An externally linked autonomous preset passed the checkout gate.'
+
+    $baseWithOldInput = (& git -C $repository rev-parse HEAD).Trim()
+    '# Updated reviewed input' | Set-Content -LiteralPath (Join-Path $repository 'README.md') -Encoding utf8NoBOM
+    & git -C $repository add README.md
+    & git -C $repository commit -m 'test: change reviewed input' | Out-Null
+    $currentInputHash = (Get-FileHash -LiteralPath (Join-Path $repository 'README.md') -Algorithm SHA256).Hash.ToLowerInvariant()
+    $reviewPath = Join-Path $tempRoot 'review-result.json'
+    Write-DependencyJson $reviewPath ([ordered]@{
+        schemaVersion = '1.0'; mode = 'Campaign'; status = 'Ready'
+        questions = @(); findings = @(); acceptedRisks = @()
+        targets = @([ordered]@{ path = 'README.md'; normalizedSha256 = $currentInputHash })
+        coverage = [ordered]@{
+            workers = @([ordered]@{ workerId = $workerId; targetPath = 'README.md'; applicability = 'Applicable' })
+            series = @()
+        }
+        operatorExceptions = @()
+    })
+    $campaign.schemaVersion = '1.2'
+    $campaign.campaignId = [Guid]::NewGuid().ToString()
+    $campaign.intakeReview = [ordered]@{ required = $true; resultPath = 'review-result.json' }
+    $campaign.workers[0].runId = [Guid]::NewGuid().ToString()
+    $campaign.workers[0].baseRef = $baseWithOldInput
+    $campaign.workers[0].branch = 'parallel/dependency/reviewed-input'
+    Write-DependencyJson $manifest $campaign
+    $reviewSource = Invoke-DependencyValidation $manifest $runnerConfig
+    Assert-DependencyTest ($reviewSource.ExitCode -eq 0) `
+        "Source review fixture failed validation: $($reviewSource.Output)"
+    $reviewState = Join-Path $tempRoot 'review-checkout-state.json'
+    $reviewRuntime = Join-Path $tempRoot 'review-checkout-runtime'
+    $reviewOutput = @(& pwsh -NoProfile -File $coordinator -Action Start -Manifest $manifest `
+        -RunnerConfig $runnerConfig -State $reviewState -RuntimeRoot $reviewRuntime 2>&1)
+    Assert-DependencyTest ($LASTEXITCODE -ne 0 -and
+        ($reviewOutput -join [Environment]::NewLine) -match 'featureInput im Worker-Checkout') `
+        'A checkout with different effective intake bytes was accepted.'
 
     Write-Output 'PASS: autonomous preset dependency preflight fixtures passed.'
 } finally {

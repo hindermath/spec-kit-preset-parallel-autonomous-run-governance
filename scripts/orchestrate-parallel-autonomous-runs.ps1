@@ -487,19 +487,54 @@ function Sync-PARStopRequest {
 function Test-PARAutonomousPreset {
     param([Parameter(Mandatory)][string] $Repository)
 
-    $registryPath = Join-Path $Repository '.specify/presets/.registry'
-    if (-not (Test-Path -LiteralPath $registryPath -PathType Leaf)) {
+    try {
+        $root = Resolve-PARPhysicalPath $Repository
+        $prefix = $root.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+        $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+        $registryPath = Resolve-PARPhysicalPath (Join-Path $root '.specify/presets/.registry')
+        if (-not $registryPath.StartsWith($prefix, $comparison) -or
+            -not (Test-Path -LiteralPath $registryPath -PathType Leaf)) { return $false }
+        $registry = Read-PARJson $registryPath
+        if (-not $registry.presets.ContainsKey('autonomous-run-governance')) { return $false }
+        $entry = $registry.presets['autonomous-run-governance']
+        if (-not [bool] $entry.enabled -or [version] $entry.version -lt [version] '0.2.2') { return $false }
+        $presetRoot = Join-Path $root '.specify/presets/autonomous-run-governance'
+        $physicalPresetRoot = Resolve-PARPhysicalPath $presetRoot
+        if (-not $physicalPresetRoot.StartsWith($prefix, $comparison) -or
+            -not (Test-Path -LiteralPath $physicalPresetRoot -PathType Container)) { return $false }
+        $presetPrefix = $physicalPresetRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+        $manifest = Resolve-PARPhysicalPath (Join-Path $presetRoot 'preset.yml')
+        if (-not $manifest.StartsWith($presetPrefix, $comparison) -or
+            -not (Test-Path -LiteralPath $manifest -PathType Leaf) -or
+            (Get-Item -LiteralPath $manifest).Length -gt 1MB -or
+            [string] $entry.manifest_hash -ne "sha256:$(Get-PARSha256 $manifest)") { return $false }
+        $manifestText = [IO.File]::ReadAllText($manifest, [Text.UTF8Encoding]::new($false, $true))
+        $versionMatch = [regex]::Match($manifestText, '(?m)^  version:\s*"([0-9]+(?:\.[0-9]+){2})"\s*$')
+        if (-not $versionMatch.Success -or [version] $versionMatch.Groups[1].Value -ne [version] $entry.version) { return $false }
+        $files = [regex]::Matches($manifestText, '(?m)^\s+file:\s*"([^"\r\n]+)"\s*$')
+        if ($files.Count -eq 0) { return $false }
+        foreach ($match in $files) {
+            $relative = [string] $match.Groups[1].Value
+            if ([IO.Path]::IsPathRooted($relative) -or $relative -match '\\|(^|/)\.\.?(/|$)') { return $false }
+            $payload = Resolve-PARPhysicalPath (Join-Path $presetRoot $relative)
+            if (-not $payload.StartsWith($presetPrefix, $comparison) -or
+                -not (Test-Path -LiteralPath $payload -PathType Leaf)) { return $false }
+        }
+        $requiredFiles = @('commands/speckit.autonomous.md',
+            'scripts/validate-autonomous-run-state.ps1',
+            'scripts/validate-autonomous-run-state.sh')
+        if ([version] $entry.version -ge [version] '0.4.0') {
+            $requiredFiles += 'scripts/autonomous-evidence-core.py'
+        }
+        foreach ($required in $requiredFiles) {
+            $requiredPath = Resolve-PARPhysicalPath (Join-Path $presetRoot $required)
+            if (-not $requiredPath.StartsWith($presetPrefix, $comparison) -or
+                -not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) { return $false }
+        }
+        return $true
+    } catch {
         return $false
     }
-    $registry = Read-PARJson $registryPath
-    if (-not $registry.presets.ContainsKey('autonomous-run-governance')) {
-        return $false
-    }
-    $entry = $registry.presets['autonomous-run-governance']
-    if (-not [bool] $entry.enabled) {
-        return $false
-    }
-    return [version] $entry.version -ge [version] '0.2.2'
 }
 
 function Test-PARDag {
@@ -555,6 +590,7 @@ function Test-PARIntakeReview {
         [Parameter(Mandatory)][string] $ManifestDirectory
     )
 
+    $script:CurrentIntakeWorkerHashes = @{}
     $notApplicable = [ordered]@{ required = $false; path = 'N/A'; sha256 = 'N/A' }
     if ([string] $Campaign.schemaVersion -ne '1.2') { return $notApplicable }
     Assert-PARCondition $Campaign.ContainsKey('intakeReview') `
@@ -621,6 +657,7 @@ function Test-PARIntakeReview {
         $featureInput = Resolve-PARFeatureInput $repository ([string] $worker.featureInput)
         Assert-PARCondition ((Get-PARNormalizedTextSha256 $featureInput) -eq $targetByPath[$targetPath]) `
             "featureInput-Hash stimmt nicht mit Review ueberein: $($worker.workerId)"
+        $script:CurrentIntakeWorkerHashes[[string] $worker.workerId] = $targetByPath[$targetPath]
         $inputText = [IO.File]::ReadAllText($featureInput, [Text.UTF8Encoding]::new($false, $true))
         if ($inputText -match '(?i)container-first' -and
             [string] $Campaign.operatorInstructions -match '(?is)\bnativ(?:e|ely)?\b.*\b(?:override|overriding|ausnahme)\b') {
@@ -1305,6 +1342,16 @@ function Invoke-PARStart {
                 $promptPath = Join-Path $promptsRoot "$($worker.workerId).txt"
                 $resultPath = Join-Path $resultsRoot "$($worker.workerId).json"
                 $featureInput = Resolve-PARFeatureInput $worktree ([string] $worker.featureInput)
+                if ([bool] $Campaign.requireAutonomousPreset) {
+                    Assert-PARCondition (Test-PARAutonomousPreset $worktree) `
+                        "autonomous-run-governance >= 0.2.2 fehlt oder ist im Worker-Checkout deaktiviert: $worktree"
+                }
+                if ([bool] $script:CurrentIntakeReview.required) {
+                    $expectedInputHash = $script:CurrentIntakeWorkerHashes[[string] $worker.workerId]
+                    Assert-PARCondition (-not [string]::IsNullOrWhiteSpace([string] $expectedInputHash) -and
+                        (Get-PARNormalizedTextSha256 $featureInput) -eq $expectedInputHash) `
+                        "featureInput im Worker-Checkout stimmt nicht mit dem Intake-Review ueberein: $($worker.workerId)"
+                }
                 $handoffInstructions = if (@($worker.handoffs).Count -eq 0) {
                     'No outgoing handoff file is required.'
                 } else {
