@@ -4,6 +4,8 @@ param(
     [Parameter(Mandatory)][string] $CampaignId,
     [Parameter(Mandatory)][string] $WorkerId,
     [Parameter(Mandatory)][string] $RunId,
+    [Parameter(Mandatory)][string] $AttemptId,
+    [string] $ReportedAttemptId = '',
     [Parameter(Mandatory)][string] $Worktree,
     [Parameter(Mandatory)][string] $ResultFile,
     [ValidateSet('Completed', 'ReadyForMerge', 'Failed')]
@@ -70,6 +72,7 @@ $parent = Split-Path -Parent $ResultFile
     campaignId = $CampaignId
     workerId = $WorkerId
     runId = $RunId
+    attemptId = if ($ReportedAttemptId) { $ReportedAttemptId } else { $AttemptId }
     status = $Mode
     headSha = $head
     autonomousStatePath = 'N/A'

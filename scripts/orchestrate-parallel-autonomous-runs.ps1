@@ -910,6 +910,7 @@ function Get-PARInitialCampaignState {
             model = $runnerMetadata.model
             reasoningEffort = $runnerMetadata.reasoningEffort
             executionAttempt = 0
+            attemptId = 'N/A'
             mergeAttempt = 0
             modelPreflight = if ($fallbackPolicy -eq 'fail-closed') { 'Pending' } else { $script:UndeclaredRunnerMetadata }
             lastPreflightAt = $null
@@ -1030,6 +1031,7 @@ function Initialize-PARStateShape {
             model = $metadata.model
             reasoningEffort = $metadata.reasoningEffort
             executionAttempt = 0
+            attemptId = 'N/A'
             mergeAttempt = 0
             mergeCommitSha = $null
             providerState = 'NotChecked'
@@ -1162,6 +1164,7 @@ function Complete-PARWorker {
             campaignId = [string] $Campaign.campaignId
             workerId = [string] $Worker.workerId
             runId = [string] $Worker.runId
+            attemptId = [string] $RunningEntry.AttemptId
             status = $derivedStatus
             headSha = [string] $head
             autonomousStatePath = $relativeState
@@ -1179,6 +1182,8 @@ function Complete-PARWorker {
     Assert-PARCondition ($resultData.campaignId -eq $Campaign.campaignId) "Worker result campaignId stimmt nicht: $ResultPath"
     Assert-PARCondition ($resultData.workerId -eq $Worker.workerId) "Worker result workerId stimmt nicht: $ResultPath"
     Assert-PARCondition ($resultData.runId -eq $Worker.runId) "Worker result runId stimmt nicht: $ResultPath"
+    Assert-PARCondition ([string] $resultData.attemptId -eq [string] $RunningEntry.AttemptId) `
+        "Worker result stammt nicht aus dem aktuellen Ausfuehrungsversuch: $ResultPath"
     Assert-PARCondition (@('Completed', 'ReadyForMerge', 'Failed') -contains $resultData.status) "Worker result status ist ungueltig: $ResultPath"
     if ($Campaign.deliveryMode -eq 'MergeAndSync') {
         Assert-PARCondition ($resultData.status -eq 'ReadyForMerge') "MergeAndSync worker must stop at ReadyForMerge: $ResultPath"
@@ -1209,6 +1214,7 @@ function Complete-PARWorker {
     $WorkerState.autonomousStatePath = [string] $resultData.autonomousStatePath
     $WorkerState.autonomousStateSha256 = [string] $resultData.autonomousStateSha256
     $WorkerState.resultPath = $ResultPath
+    $WorkerState.attemptId = [string] $RunningEntry.AttemptId
     $WorkerState.prUrl = $resultData.prUrl
     $WorkerState.handoffs = @($validatedHandoffs)
     $WorkerState.summary = [string] $resultData.summary
@@ -1340,7 +1346,8 @@ function Invoke-PARStart {
                 }
 
                 $promptPath = Join-Path $promptsRoot "$($worker.workerId).txt"
-                $resultPath = Join-Path $resultsRoot "$($worker.workerId).json"
+                $attemptId = [guid]::NewGuid().ToString('N')
+                $resultPath = Join-Path $resultsRoot "$($worker.workerId)-$attemptId.json"
                 $featureInput = Resolve-PARFeatureInput $worktree ([string] $worker.featureInput)
                 if ([bool] $Campaign.requireAutonomousPreset) {
                     Assert-PARCondition (Test-PARAutonomousPreset $worktree) `
@@ -1367,7 +1374,7 @@ function Invoke-PARStart {
                     @"
 The campaign retains all merge authority. Your worker delivery boundary is PublishPR: commit, push, create the PR, but do not merge it.
 Before finishing, write worker-result schema 1.1 to: $resultPath
-Set status ReadyForMerge, headSha to the exact pushed head, prUrl to the created PR URL, autonomousStatePath and autonomousStateSha256 to the final state, and include every declared handoff with its SHA-256.
+Set attemptId to $attemptId, status ReadyForMerge, headSha to the exact pushed head, prUrl to the created PR URL, autonomousStatePath and autonomousStateSha256 to the final state, and include every declared handoff with its SHA-256.
 "@
                 } else {
                     'The coordinator derives a local worker result when no explicit result file is written.'
@@ -1383,6 +1390,7 @@ Execute the installed speckit.autonomous workflow for this worker.
 Campaign ID: $($Campaign.campaignId)
 Worker ID: $($worker.workerId)
 Run ID: $($worker.runId)
+Execution attempt ID: $attemptId
 Campaign delivery mode: $($Campaign.deliveryMode)
 Worker delivery mode: $workerDeliveryMode
 Feature input: $featureInput
@@ -1405,6 +1413,7 @@ Do not infer remote, merge, bypass, cancellation, secret, or provider authority.
                     campaignId = [string] $Campaign.campaignId
                     workerId = [string] $worker.workerId
                     runId = [string] $worker.runId
+                    attemptId = $attemptId
                     worktree = $worktree
                     repository = $repository
                     branch = [string] $worker.branch
@@ -1442,6 +1451,7 @@ Do not infer remote, merge, bypass, cancellation, secret, or provider authority.
                 $workerState.worktree = $worktree
                 $workerState.processId = $processInfo.Process.Id
                 $workerState.executionAttempt = [int] $workerState.executionAttempt + 1
+                $workerState.attemptId = $attemptId
                 $workerState.summary = 'Runner active.'
                 Add-PARStateEvent $campaignState 'WorkerStarted' "Worker started with runner profile '$runnerProfileName'." `
                     -WorkerId ([string] $worker.workerId) -Attempt ([int] $workerState.executionAttempt)
@@ -1449,6 +1459,7 @@ Do not infer remote, merge, bypass, cancellation, secret, or provider authority.
                     Worker = $worker
                     Worktree = $worktree
                     ResultPath = $resultPath
+                    AttemptId = $attemptId
                     Process = $processInfo
                 }
                 if ($running.Count -gt [int] $campaignState.maximumObservedConcurrency) {

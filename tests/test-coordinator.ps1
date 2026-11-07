@@ -120,6 +120,7 @@ try {
                     '-CampaignId', '{campaignId}',
                     '-WorkerId', '{workerId}',
                     '-RunId', '{runId}',
+                    '-AttemptId', '{attemptId}',
                     '-Worktree', '{worktree}',
                     '-ResultFile', '{resultFile}',
                     '-Mode', 'Completed',
@@ -134,6 +135,7 @@ try {
                     '-CampaignId', '{campaignId}',
                     '-WorkerId', '{workerId}',
                     '-RunId', '{runId}',
+                    '-AttemptId', '{attemptId}',
                     '-Worktree', '{worktree}',
                     '-ResultFile', '{resultFile}',
                     '-Mode', 'ReadyForMerge',
@@ -148,6 +150,7 @@ try {
                     '-CampaignId', '{campaignId}',
                     '-WorkerId', '{workerId}',
                     '-RunId', '{runId}',
+                    '-AttemptId', '{attemptId}',
                     '-Worktree', '{worktree}',
                     '-ResultFile', '{resultFile}',
                     '-Mode', 'Completed',
@@ -171,6 +174,10 @@ try {
         executable = 'pwsh'
         arguments = @($runnerData.profiles.fixture.arguments) + @('-HandoffSymlinkOutside', $outsideHandoff)
     }
+    $runnerData.profiles['stale-result'] = [ordered]@{
+        executable = 'pwsh'
+        arguments = @($runnerData.profiles.fixture.arguments) + @('-ReportedAttemptId', '00000000-0000-0000-0000-000000000001')
+    }
     Write-Data $script:runnerConfig $runnerData
 
     $replicatedWorkers = 1..3 | ForEach-Object {
@@ -188,6 +195,23 @@ try {
     $independent = Invoke-Campaign (Get-TestCampaign 'independent' 'IndependentFeatures' $independentWorkers) 'independent'
     Assert-Test ($independent.Data.status -eq 'Completed') 'IndependentFeatures did not complete'
     Assert-Test ((@($independent.Data.workers.worktree | Sort-Object -Unique)).Count -eq 3) 'Independent worktrees are not unique'
+
+    $staleRepository = Initialize-TestRepository 'stale-result-repo'
+    $staleWorker = Get-TestWorker 'stale-worker' $staleRepository
+    $staleWorker.runnerProfile = 'stale-result'
+    $staleCampaign = Get-TestCampaign 'stale-result' 'IndependentFeatures' @($staleWorker)
+    $staleRoot = Join-Path $tempRoot 'stale-result'
+    [void](New-Item -ItemType Directory -Path $staleRoot)
+    $staleManifest = Join-Path $staleRoot 'campaign.json'
+    Write-Data $staleManifest $staleCampaign
+    $staleOutput = @(& pwsh -NoProfile -File $coordinator -Action Start -Manifest $staleManifest `
+        -RunnerConfig $script:runnerConfig -State (Join-Path $staleRoot 'state.json') `
+        -RuntimeRoot (Join-Path $staleRoot 'runtime') 2>&1)
+    $staleStateData = Get-Content -LiteralPath (Join-Path $staleRoot 'state.json') -Raw | ConvertFrom-Json
+    Assert-Test ($staleStateData.status -eq 'Failed' -and
+        $staleStateData.workers[0].status -eq 'Failed' -and
+        $staleStateData.workers[0].summary -match 'aktuellen Ausfuehrungsversuch') `
+        'A worker result with a replayed attempt ID was accepted.'
 
     $alternativeRepo = Initialize-TestRepository 'alternative-repo'
     $alternativeWorkers = 1..3 | ForEach-Object { Get-TestWorker "alternative-0$_" $alternativeRepo }

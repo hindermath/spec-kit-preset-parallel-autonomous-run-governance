@@ -27,6 +27,14 @@ Before each worker starts, the effective `featureInput` bytes and Autonomous
 preset version are checked again in its actual worktree. A worktree based on
 an older predecessor commit must pass the same gates.
 
+Jeder Worker-Lauf erhält eine neue, zufällige `attemptId` und einen eigenen
+Ergebnisdateipfad. Ein explizites Ergebnis muss genau diese ID enthalten;
+ein Ergebnis eines früheren Resume-Versuchs wird abgewiesen.
+
+Each worker launch receives a fresh random `attemptId` and its own result
+path. An explicit result must carry that exact ID, so a previous Resume
+result cannot be replayed.
+
 [Handbuch / Manual](README.md) | [Lebenszyklus / Lifecycle](lifecycle-and-operations.md)
 
 ## Kampagnenarchitektur / Campaign architecture

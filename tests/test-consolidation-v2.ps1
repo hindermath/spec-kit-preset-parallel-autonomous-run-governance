@@ -157,6 +157,7 @@ function New-TestCase {
         '-CampaignId', '{campaignId}',
         '-WorkerId', '{workerId}',
         '-RunId', '{runId}',
+        '-AttemptId', '{attemptId}',
         '-Worktree', '{worktree}',
         '-ResultFile', '{resultFile}',
         '-Mode', 'ReadyForMerge',
