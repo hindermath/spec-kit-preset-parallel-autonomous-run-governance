@@ -50,7 +50,7 @@
       "priority": 70
     },
     "parallel-autonomous-run-governance": {
-      "version": "0.2.9",
+      "version": "0.2.10",
       "priority": 80
     },
     "project-statistics-governance": {
