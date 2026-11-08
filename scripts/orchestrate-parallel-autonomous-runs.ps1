@@ -294,7 +294,7 @@ function Invoke-PARProfileCommand {
     } finally {
         if ($null -ne $processInfo) {
             if (-not $processInfo.Process.HasExited) {
-                try { $processInfo.Process.Kill($true) } catch [InvalidOperationException] { }
+                try { $processInfo.Process.Kill($true) } catch [InvalidOperationException] { Write-Verbose 'Prozess beendete sich bereits waehrend der Bereinigung.' }
                 [void] $processInfo.Process.WaitForExit(5000)
             }
             $processInfo.StdoutStream.Dispose()
