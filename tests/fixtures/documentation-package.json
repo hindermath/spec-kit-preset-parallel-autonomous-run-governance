@@ -1,6 +1,6 @@
 {
   "id": "parallel-autonomous-run-governance",
-  "version": "0.2.12",
+  "version": "0.2.13",
   "priority": 80,
   "readers": [
     "docs/user-guide.md",
