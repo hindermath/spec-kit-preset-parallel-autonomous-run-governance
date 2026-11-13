@@ -1,8 +1,8 @@
 # User guide: parallel-autonomous-run-governance
 
-<!-- current-package: 0.2.12 -->
+<!-- current-package: 0.2.13 -->
 
-Package identity: **v0.2.12**. [Preparation and publication boundary](release-0.2.12-validation.md). The release page, not this preparation snapshot, proves publication and the external archive hash. Earlier version records below remain historical.
+Package identity: **v0.2.13**. [Preparation and publication boundary](release-0.2.13-validation.md). The release page, not this preparation snapshot, proves publication and the external archive hash. Earlier version records below remain historical.
 
 [Release-Abschluss und Verbesserungsprofil / Publication closeout and improvement profile](release-0.2.8-validation.md).
 

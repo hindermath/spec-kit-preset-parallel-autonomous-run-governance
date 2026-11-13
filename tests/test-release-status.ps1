@@ -1,4 +1,4 @@
-﻿#Requires -Version 7.3
+#Requires -Version 7.3
 <#
 .SYNOPSIS
 DE: Historischen Kandidatenstand und belegte Veröffentlichung getrennt prüfen.
@@ -106,6 +106,7 @@ $expectedMetadataCorrection = $id -cin @('intake-authoring-governance', 'intake-
 if ($packageVersion -ceq '0.2.10') { $expectedMetadataCorrection = $true }
 if ($packageVersion -ceq '0.2.11') { $expectedMetadataCorrection = $true }
 if ($packageVersion -ceq '0.2.12') { $expectedMetadataCorrection = $true }
+if ($packageVersion -ceq '0.2.13') { $expectedMetadataCorrection = $false }
 Assert-ReleaseStatus ($fixture.version -ceq $packageVersion -and [version]$version -lt [version]$packageVersion) 'explicit earlier publication record, not current-package publication'
 $preparation = Get-Content (Join-Path $root "docs/release-$packageVersion-preparation.json") -Raw | ConvertFrom-Json
 Assert-ReleaseStatus ($preparation.presetId -ceq $id -and $preparation.packageVersion -ceq $packageVersion -and
